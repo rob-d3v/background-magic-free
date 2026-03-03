@@ -1,0 +1,15 @@
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+rembg[gpu]>=2.0.50
+onnxruntime-gpu>=1.16.0
+diffusers>=0.25.0
+transformers>=4.36.0
+accelerate>=0.25.0
+safetensors>=0.4.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+requests>=2.31.0
+tqdm>=4.66.0
+huggingface_hub>=0.20.0
