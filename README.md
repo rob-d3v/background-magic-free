@@ -10,7 +10,9 @@
 Voce grava um video qualquer (pode ser no celular, webcam, tanto faz) e essa ferramenta:
 
 1. **Recorta voce do video** — remove o fundo frame por frame usando IA
-2. **Cria um fundo novo** — voce digita o que quer (ex: "estudio moderno com luz azul") e a IA gera
+2. **Coloca um fundo novo** — voce escolhe:
+   - **Opcao A:** digita o que quer (ex: "estudio moderno com luz azul") e a IA gera
+   - **Opcao B:** faz upload da sua propria imagem de fundo (foto, print, etc)
 3. **Ajusta a iluminacao** — a IA faz parecer que voce realmente esta naquele ambiente
 4. **Exporta o video final** — com o audio original, pronto pra usar
 
@@ -75,14 +77,19 @@ O notebook tem 9 celulas. Rode uma de cada vez clicando no botao de play (triang
 - Baixa os modelos Stable Diffusion e IC-Light (~4GB no total).
 - Primeira vez demora uns 5-10 minutos. Depois pula automatico.
 
-**Celula 5 — Upload do video**
-- Duas opcoes:
-  - **Opcao A (mais facil):** Aparece um botao de upload. Clique e selecione seu video `.mp4`
-  - **Opcao B:** Coloque o video manualmente em `Google Drive > iclight_pipeline > input > video.mp4`
+**Celula 5 — Upload do video + fundo (opcional)**
+- Primeiro faz upload do seu video `.mp4`
+  - Ou coloque manualmente em `Google Drive > iclight_pipeline > input > video.mp4`
+- Depois pergunta se voce quer enviar um **fundo proprio** (imagem/foto)
+  - **Se voce TEM uma imagem de fundo:** faz upload dela. A IA pula a geracao e usa a sua imagem direto. Mais rapido!
+  - **Se voce NAO tem:** clica Cancel ou nao envia nada. A IA gera um fundo pra voce na proxima celula.
 - No final mostra as informacoes do video e o tempo estimado.
 
-**Celula 6 — Escolher o fundo**
-- Aqui voce digita o prompt (em ingles funciona melhor). Exemplos:
+**Celula 6 — Configurar prompt e parametros**
+- O prompt serve pra duas coisas:
+  - Se voce **nao enviou fundo**: a IA gera o fundo a partir desse texto
+  - Se voce **enviou fundo proprio**: o prompt ainda eh usado pro IC-Light ajustar a iluminacao (descreva a luz da cena)
+- Exemplos de prompts (em ingles funciona melhor):
   ```
   modern studio with soft blue ambient lighting, cinematic
   tropical beach at sunset, warm golden light
