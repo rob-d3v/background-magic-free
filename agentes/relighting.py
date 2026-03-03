@@ -5,7 +5,6 @@ Usa IC-Light foreground-conditioned (iclight_sd15_fc).
 """
 
 import os
-import sys
 import time
 import json
 
@@ -61,7 +60,7 @@ def _encode_image_to_latent(pipe, image, generator=None):
     """Codifica imagem PIL para latent space via VAE."""
     image_np = np.array(image).astype(np.float32) / 255.0
     image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).unsqueeze(0)
-    image_tensor = image_tensor.to(device=pipe.device, dtype=pipe.dtype)
+    image_tensor = image_tensor.to(device=pipe.device, dtype=pipe.unet.dtype)
     image_tensor = image_tensor * 2.0 - 1.0
     latent = pipe.vae.encode(image_tensor).latent_dist.sample(generator)
     latent = latent * pipe.vae.config.scaling_factor
@@ -117,13 +116,7 @@ def aplicar_relighting(
         try:
             fg = Image.open(os.path.join(frames_nobg_dir, frame_name)).convert("RGBA")
 
-            # Criar composição foreground sobre fundo para condicionamento
-            bg_resized = bg.resize(fg.size, Image.LANCZOS)
-            composite = bg_resized.copy()
-            composite.paste(fg, (0, 0), fg)  # cola fg com alpha mask
-            composite_rgb = composite.convert("RGB")
-
-            # Extrair só o foreground em RGB (alpha premultiply)
+            # Extrair foreground em RGB (alpha sobre cinza neutro)
             fg_rgb = Image.new("RGB", fg.size, (127, 127, 127))
             fg_rgb.paste(fg, (0, 0), fg)
 
@@ -132,7 +125,6 @@ def aplicar_relighting(
             w8 = (w // 8) * 8
             h8 = (h // 8) * 8
             fg_rgb = fg_rgb.resize((w8, h8), Image.LANCZOS)
-            composite_rgb = composite_rgb.resize((w8, h8), Image.LANCZOS)
 
             # Encode foreground como condição concat
             fg_latent = _encode_image_to_latent(pipe, fg_rgb, generator)
@@ -185,8 +177,17 @@ def aplicar_relighting(
     elapsed = round(time.time() - start, 2)
 
     if log_path and erros:
+        # Carregar log existente ou criar novo
+        log_data = {}
+        if os.path.exists(log_path):
+            try:
+                with open(log_path) as f:
+                    log_data = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                log_data = {}
+        log_data["relighting_erros"] = erros
         with open(log_path, "w") as f:
-            json.dump({"etapa": "relighting", "erros": erros}, f, indent=2)
+            json.dump(log_data, f, indent=2)
 
     processados = len(frames) - len(erros)
     print(f"  {processados}/{len(frames)} frames relitados ({elapsed}s)")

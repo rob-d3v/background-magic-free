@@ -55,8 +55,17 @@ def remover_fundo(frames_dir: str, output_dir: str, log_path: str = None):
     elapsed = round(time.time() - start, 2)
 
     if log_path and erros:
+        # Carregar log existente ou criar novo
+        log_data = {}
+        if os.path.exists(log_path):
+            try:
+                with open(log_path) as f:
+                    log_data = json.load(f)
+            except (json.JSONDecodeError, ValueError):
+                log_data = {}
+        log_data["remocao_fundo_erros"] = erros
         with open(log_path, "w") as f:
-            json.dump({"etapa": "remocao_fundo", "erros": erros}, f, indent=2)
+            json.dump(log_data, f, indent=2)
 
     processados = len(frames) - len(erros)
     print(f"  {processados}/{len(frames)} frames processados ({elapsed}s)")

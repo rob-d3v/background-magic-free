@@ -4,6 +4,7 @@ Gera uma imagem de fundo via ComfyUI API rodando em background.
 """
 
 import json
+import os
 import uuid
 import time
 import subprocess
@@ -48,7 +49,6 @@ def gerar_fundo(
     seed: int = -1,
 ):
     """Gera imagem de fundo via ComfyUI API com SD 1.5."""
-    import os
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     start = time.time()

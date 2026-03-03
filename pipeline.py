@@ -18,9 +18,7 @@ Uso com fundo proprio:
 import argparse
 import json
 import os
-import shutil
 import time
-from pathlib import Path
 
 from PIL import Image
 
