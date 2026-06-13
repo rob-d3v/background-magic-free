@@ -95,22 +95,57 @@ Pipeline por frame no worker:
 ## Renderizar vídeo (`_render_video`)
 Botão **🎬 Renderizar vídeo...** — aplica o **fundo e o motor atuais** a um
 **arquivo de vídeo** inteiro (não só ao stream da webcam) e salva o resultado na
-galeria. Fluxo:
-1. `filedialog` escolhe o vídeo de entrada (mp4/mov/avi/mkv/webm). Se o fundo está
-   em "Nenhum", um `messagebox` confirma (renderiza sem trocar o fundo).
-2. **Snapshot das configs atuais** — `engine`, `bg_mode`, `bg_img` (`.copy()`),
-   `bg_video_path`, `blur`, `refine` — capturado **antes** de disparar a thread,
-   pra o worker do live continuar usando os valores originais sem corrida.
+galeria. **Não renderiza direto:** primeiro mostra um **preview de 1 frame** pra o
+usuário conferir/ajustar o fundo e os efeitos, e só então renderiza o vídeo todo.
+
+### Preview de 1 frame antes de renderizar
+`_render_video` não dispara o render — ele abre o vídeo, busca o **frame do meio**
+(`CAP_PROP_POS_FRAMES = total // 2`; fallback pro frame 0 se a leitura falhar) e
+abre um `tk.Toplevel` de **pré-visualização** (`_abrir_preview_render(src, frame0)`)
+mostrando esse frame **já com o fundo + ajustes atuais aplicados**. O usuário mexe
+nos controles da janela principal e reavalia o preview. Botões:
+- **"↻ Atualizar preview"** — recompõe o `frame0` com as configs **atuais** da
+  janela (lê `self.bg_mode`/`bg_image_path`/`blur`/`refine`/`zoom`/`brilho`/etc. no
+  momento do clique). O `PhotoImage` é criado aqui, na main thread.
+- **"🎬 Renderizar vídeo todo"** (`Accent.TButton`) — fecha o preview e chama
+  `_executar_render(src)` (o render real).
+- **"Cancelar"** — só fecha a janela.
+
+**Helpers novos** (todos operam em BGR e não dependem do worker do live):
+- `_bg_for_frame(frame)` — resolve o **fundo BGR no tamanho do frame** conforme o
+  modo atual: `video` → 1º frame do vídeo de fundo (`cobrir`); `image` → `cv2.imread`
+  do `bg_image_path` (`cobrir`); senão → `fundo_desfocado(frame, blur|1)`.
+- `_compose_one(frame)` — fundo (`_bg_for_frame`) + `matter.compor(... refine=...)`
+  + `aplicar_ajustes(...)`. **Reseta o estado do RVM** antes (`matter.reset()` se
+  existir) — é um preview de 1 frame isolado ([[concepts/rvm-matting]]). Com
+  `bg_mode=="none"` passa o frame cru (só ajustes).
+- `_fit(img, maxw, maxh)` (staticmethod) — escala a imagem pra caber em
+  `maxw×maxh` (760×460 no preview) mantendo proporção; nunca amplia (`s ≤ 1.0`).
+
+### Render real (`_executar_render`)
+Depois de confirmado no preview:
+1. **Snapshot das configs atuais** — `engine`, `bg_mode`, `bg_image_path` (só se
+   `image`), `bg_video_path` (só se `video`), `blur`, `refine` — capturado **antes**
+   de disparar a thread, pra o worker do live não correr com os valores.
+2. `self._rendering = True` e o botão vira "🎬 Renderizando..." `disabled`.
 3. Roda `render_arquivo(...)` ([[components/render-video]]) numa **thread daemon
-   separada** (não congela a UI). O botão vira "🎬 Renderizando..." e fica
-   `disabled`; o progresso aparece na status bar (via `progress_cb` → `root.after(0,
-   ...)`, porque só a main thread mexe em widgets).
-4. No fim, reabilita o botão e mostra `messagebox` (sucesso ou erro). Saída em
-   `<workspace>/galeria/render_<timestamp>.mp4`.
+   separada** (não congela a UI); progresso na status bar (via `progress_cb` →
+   `root.after(0, ...)`, só a main thread mexe em widgets).
+4. No callback `fim()`: `self._rendering = False`, reabilita o botão e mostra
+   `messagebox` (sucesso ou erro). Saída em `<workspace>/galeria/render_<timestamp>.mp4`.
+
+### Solta a webcam durante o render
+O matting RVM é pesado; rodá-lo enquanto a webcam continua capturando faz os dois
+competirem por CPU. Por isso há a flag **`self._rendering`**: enquanto `True`, o
+worker (`_loop`) **libera a câmera** (`cap.release()`, `cap = None`, frame `None`) e
+fica **ocioso** — a webcam/CPU ficam livres pro render. `_executar_render` seta
+`_rendering=True` antes de disparar e `_rendering=False` no `fim()`; o worker
+**reabre a câmera sozinho** quando `_rendering` volta a `False`. Ver
+[Gotcha 8](#gotchas).
 
 > O `render_arquivo` **remuxa o áudio original** do vídeo de entrada (o stream live
-> e a gravação `● Gravar` são mudos). Verificado end-to-end (61 frames → mp4 válido;
-> áudio remuxado quando o input tem áudio). Detalhes em [[components/render-video]].
+> e a gravação `● Gravar` são mudos), de forma robusta (`-map 1:a:0?` — áudio
+> opcional). Verificado end-to-end. Detalhes em [[components/render-video]].
 
 ## Cache de preferências
 Toda configuração do app **persiste num JSON** e é **restaurada ao reabrir** — não
@@ -234,12 +269,19 @@ saturacao=1, nitidez=0), então o custo é só dos ajustes ativos.
    `rvm_mobilenetv3.pth` (~15MB) via torch.hub; a UI mostra "Carregando motor (RVM
    baixa o modelo na 1a vez)..." e o worker fica `_paused`. Exige **torchvision**
    instalado ([[concepts/rvm-matting]]); se faltar/erro, o app volta pro MediaPipe.
-7. **O render usa um snapshot, não o estado vivo.** `_render_video` captura as
+7. **O render usa um snapshot, não o estado vivo.** `_executar_render` captura as
    configs (engine/fundo/blur/refine) **antes** de disparar a thread, e o
    `render_arquivo` constrói seu **próprio** matter — não compartilha `self.matter`
    com o worker do live. Mexer nos controles durante o render não afeta o render em
    curso, e vice-versa. `progress_cb`/`messagebox` precisam de `root.after(0, ...)`
-   (só a main thread mexe em widgets Tk).
+   (só a main thread mexe em widgets Tk). O **preview** (`_compose_one`), em
+   contraste, **lê o estado vivo** a cada clique de "Atualizar" — é justamente pra o
+   usuário ajustar antes de tirar o snapshot.
+8. **O render solta a webcam.** A flag `self._rendering` faz o worker (`_loop`)
+   liberar o `cap` e ficar ocioso enquanto o render roda — senão a webcam + o RVM do
+   render competem por CPU. O worker reabre a câmera sozinho quando `_rendering`
+   volta a `False` (no `fim()`). Efeito visível: o preview da webcam **congela/apaga**
+   durante o render e volta sozinho ao terminar.
 
 ## Relacionados
 [[components/live-mode]] · [[concepts/realtime-matting]] · [[concepts/rvm-matting]] ·

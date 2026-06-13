@@ -45,32 +45,45 @@ color_match=0.12, feather=2, progress_cb=None)`:
 > (frame-isolado) e o `compor` (rembg, por-frame) **não** têm.
 
 ## `render_arquivo` — render direto de um arquivo de vídeo (com áudio)
-`render_arquivo(input_path, output_path, engine="rvm", bg_mode, bg_image_bgr=None,
-bg_video_path=None, blur=45, color_match=0.12, refine=True, progress_cb=None)`.
-Renderiza um **arquivo de vídeo inteiro** trocando o fundo, **sem extrair frames
-em disco** — chamado pelo botão **🎬 Renderizar vídeo...** do [[components/camera-app]].
+`render_arquivo(input_path, output_path, engine="rvm", bg_mode="blur",
+bg_image_path=None, bg_video_path=None, blur=45, color_match=0.12, refine=True,
+progress_cb=None)`. Renderiza um **arquivo de vídeo inteiro** trocando o fundo,
+**sem extrair frames em disco** — chamado pelo botão **🎬 Renderizar vídeo...** do
+[[components/camera-app]].
 
 1. Abre o vídeo com **`cv2.VideoCapture`** e lê `fps`/`w`/`h`/`total` (`fps` cai pra
    `24.0` se o container não reporta).
 2. Constrói o matter via `_build_matter(engine)`. Pré-resolve o fundo conforme
-   `bg_mode`: `video` → `VideoFundo(bg_video_path)` em loop; `image` → `cobrir(
-   bg_image_bgr, w, h)`; senão (`blur`) → `fundo_desfocado(frame, blur|1)` por
+   `bg_mode`: `video` → `VideoFundo(bg_video_path, w, h)` em loop; `image` → lê a
+   **imagem original** do `bg_image_path` com `cv2.imread` e faz `cobrir(raw, w, h)`
+   no tamanho **do vídeo**; senão (`blur`) → `fundo_desfocado(frame, blur|1)` por
    frame; `none` → passa o frame cru (sem matting).
 3. **Para cada frame** (`cap.read()` em loop): compõe `matter.compor(frame, bg,
    color_match, refine=refine)` e escreve num **mp4 temporário** (`VideoWriter`,
    fourcc **`mp4v`**, `<output>_noaudio.mp4`). `progress_cb(i, total)` por frame.
-4. **Remux do áudio original** (passo que o `render_matting` não tem): `ffprobe`
-   detecta se o input tem stream de áudio; **se tem**, `ffmpeg -c:v copy -c:a aac
-   -map 0:v:0 -map 1:a:0 -shortest` junta o vídeo renderizado (sem áudio) com o
-   áudio do input e remove o temporário; **se não tem**, só `os.replace` (renomeia
-   o temporário pra saída final).
+4. **Remux robusto do áudio original** (passo que o `render_matting` não tem):
+   **sempre** roda `ffmpeg -y -i <tmp> -i <input> -map 0:v:0 -map 1:a:0? -c:v copy
+   -c:a aac -shortest <output>`. O **`?`** em `-map 1:a:0?` torna o áudio
+   **opcional**: se o input tem áudio, entra; se não tem, o ffmpeg **ignora sem
+   erro**. Em sucesso, remove o temporário. **Fallback:** se o mux falhar por
+   qualquer motivo (`try/except`), `os.replace(tmp, output_path)` entrega ao menos o
+   vídeo **sem áudio**.
+
+> **Bug corrigido (áudio).** Antes o áudio era sondado com `ffprobe` + match de
+> string (`'"codec_type": "audio"'`) e às vezes falhava → render saía **mudo**
+> mesmo com áudio no input. O `-map 1:a:0?` elimina a sonda: o ffmpeg decide sozinho
+> se há áudio. Verificado: clipe **com** áudio → render mantém o áudio.
+
+> **Bug corrigido (param de fundo).** O parâmetro era `bg_image_bgr` (imagem já no
+> tamanho da câmera, repassada pelo app) e degradava ao reescalar. Agora é
+> **`bg_image_path`**: `render_arquivo` lê a imagem **original** (`cv2.imread`) e faz
+> `cobrir` no tamanho do **vídeo de entrada** — sem perda por dupla reescala.
 
 > **Diferenças vs `render_matting`:** (a) entrada é **arquivo**, não diretório de
-> frames; (b) **escreve mp4** direto (não PNGs); (c) **carrega o áudio** original;
-> (d) tem o modo de fundo **`blur`** (`fundo_desfocado` por frame) e **`none`**
-> (passthrough sem matting), além de imagem/vídeo; (e) usa `refine` (repassa ao
-> `compor`) em vez de `feather`. Verificado end-to-end: 61 frames → mp4 válido,
-> áudio remuxado quando o input tem áudio.
+> frames; (b) **escreve mp4** direto (não PNGs); (c) **carrega o áudio** original
+> (mux robusto `-map 1:a:0?`); (d) tem o modo de fundo **`blur`** (`fundo_desfocado`
+> por frame) e **`none`** (passthrough sem matting), além de imagem/vídeo; (e) usa
+> `refine` (repassa ao `compor`) em vez de `feather`. Verificado end-to-end.
 
 ## Inputs / Outputs (`render_matting`)
 - **Inputs:** `frames_dir` (frames crus, ex. `frames_raw/`), `background_path`
@@ -128,11 +141,13 @@ No modo HD:
   ([[components/exportacao]], com o áudio original). **Pula** o `remover_fundo`.
 
 ## Integração no app de câmera (`camera_app.py`)
-O botão **🎬 Renderizar vídeo...** ([[components/camera-app]]) chama
-`render_arquivo(...)` numa thread, passando um **snapshot** das configs atuais do
-app (engine, bg_mode, bg_img/bg_video_path, blur, refine). É a forma de aplicar o
-mesmo recorte/fundo do live a um vídeo gravado **com áudio**, sem passar pelo
-Studio.
+O botão **🎬 Renderizar vídeo...** ([[components/camera-app]]) primeiro mostra um
+**preview de 1 frame** (frame do meio do vídeo, com fundo+ajustes atuais) e, ao
+confirmar, chama `render_arquivo(...)` numa thread, passando um **snapshot** das
+configs atuais do app (engine, bg_mode, **bg_image_path**/bg_video_path, blur,
+refine). Durante o render o app **solta a webcam** (flag `_rendering`) pra não
+disputar CPU com o RVM. É a forma de aplicar o mesmo recorte/fundo do live a um
+vídeo gravado **com áudio**, sem passar pelo Studio.
 
 ## Relacionados
 [[concepts/rvm-matting]] · [[components/camera-app]] · [[components/live-mode]] ·

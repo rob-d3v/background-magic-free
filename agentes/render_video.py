@@ -89,7 +89,7 @@ def render_arquivo(
     output_path: str,
     engine: str = "rvm",
     bg_mode: str = "blur",
-    bg_image_bgr=None,
+    bg_image_path: str = None,
     bg_video_path: str = None,
     blur: int = 45,
     color_match: float = 0.12,
@@ -101,7 +101,7 @@ def render_arquivo(
     vídeo (sem extrair frames) e escrevendo um mp4 — depois remuxa o áudio
     original. Usado pelo botão "Renderizar vídeo" do app de câmera.
 
-    bg_mode: none | blur | image (bg_image_bgr) | video (bg_video_path em loop).
+    bg_mode: none | blur | image (bg_image_path) | video (bg_video_path em loop).
     """
     import os
     cap = cv2.VideoCapture(input_path)
@@ -114,7 +114,11 @@ def render_arquivo(
 
     matter = _build_matter(engine)
     bgv = VideoFundo(bg_video_path, w, h) if (bg_mode == "video" and bg_video_path) else None
-    bgimg = cobrir(bg_image_bgr, w, h) if (bg_mode == "image" and bg_image_bgr is not None) else None
+    bgimg = None
+    if bg_mode == "image" and bg_image_path and os.path.exists(bg_image_path):
+        raw = cv2.imread(bg_image_path, cv2.IMREAD_COLOR)
+        if raw is not None:
+            bgimg = cobrir(raw, w, h)
 
     tmp = output_path[:-4] + "_noaudio.mp4" if output_path.endswith(".mp4") else output_path + ".tmp.mp4"
     writer = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
@@ -144,24 +148,18 @@ def render_arquivo(
     if bgv is not None:
         bgv.close()
 
-    # remuxa o áudio original (se houver)
-    audio_ok = False
+    # remuxa o áudio original. `-map 1:a:0?` torna o áudio OPCIONAL: se o vídeo
+    # tiver áudio ele entra; se não tiver, o ffmpeg só ignora (sem erro). Mais
+    # robusto que sondar com ffprobe (a sonda por string falhava em alguns casos).
     try:
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries",
-             "stream=codec_type", "-of", "json", input_path],
-            capture_output=True, text=True)
-        audio_ok = '"codec_type": "audio"' in probe.stdout
-    except Exception:
-        audio_ok = False
-
-    if audio_ok:
         subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp, "-i", input_path, "-c:v", "copy",
-             "-c:a", "aac", "-map", "0:v:0", "-map", "1:a:0", "-shortest", output_path],
+            ["ffmpeg", "-y", "-i", tmp, "-i", input_path,
+             "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-c:a", "aac",
+             "-shortest", output_path],
             check=True, capture_output=True)
         os.remove(tmp)
-    else:
+    except Exception:
+        # se o mux falhar por qualquer motivo, ao menos entrega o vídeo sem áudio
         os.replace(tmp, output_path)
 
     return {"output": output_path, "frames": i, "engine": engine}

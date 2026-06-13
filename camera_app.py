@@ -99,6 +99,7 @@ class CameraApp:
         self._lock = threading.Lock()
         self._fps = 0.0
         self._paused = False
+        self._rendering = False      # durante render offline: solta a webcam
         self.engine = c.get("engine", "mediapipe")
         self.matter = None       # criado no worker → janela abre instantânea
 
@@ -424,27 +425,117 @@ class CameraApp:
             self.req_virtual = False
             self.btn_vcam.config(text="🔴 Iniciar câmera virtual (stream)")
 
+    # ─────────────────────── render de vídeo (com preview) ───────────────────────
+    def _bg_for_frame(self, frame):
+        """Resolve o fundo (BGR) no tamanho do `frame` conforme o modo atual."""
+        h, w = frame.shape[:2]
+        if self.bg_mode == "video" and self.bg_video_path and os.path.exists(self.bg_video_path):
+            cap = cv2.VideoCapture(self.bg_video_path)
+            ok, bf = cap.read()
+            cap.release()
+            if ok:
+                return cobrir(bf, w, h)
+        elif self.bg_mode == "image" and self.bg_image_path and os.path.exists(self.bg_image_path):
+            raw = cv2.imread(self.bg_image_path, cv2.IMREAD_COLOR)
+            if raw is not None:
+                return cobrir(raw, w, h)
+        return fundo_desfocado(frame, int(self.blur) | 1)
+
+    def _compose_one(self, frame):
+        """Aplica fundo + ajustes atuais a UM frame (pra preview do render)."""
+        if self.matter is None:
+            self.matter = LiveMatter()
+        if hasattr(self.matter, "reset"):
+            self.matter.reset()
+        if self.bg_mode == "none":
+            out = frame
+        else:
+            bg = self._bg_for_frame(frame)
+            out = self.matter.compor(frame, bg, color_match=0.12, refine=self.refine)
+        return aplicar_ajustes(
+            out, zoom=self.zoom, pan_x=self.pan_x, pan_y=self.pan_y,
+            brilho=int(self.brilho), contraste=self.contraste,
+            saturacao=self.saturacao, nitidez=self.nitidez)
+
+    @staticmethod
+    def _fit(img, maxw, maxh):
+        h, w = img.shape[:2]
+        s = min(maxw / w, maxh / h, 1.0)
+        if s < 1.0:
+            img = cv2.resize(img, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
+        return img
+
     def _render_video(self):
-        """Aplica o fundo/efeitos atuais a um arquivo de vídeo e salva na galeria."""
+        """Escolhe um vídeo, mostra preview de 1 frame pra configurar, depois renderiza."""
         p = filedialog.askopenfilename(
             title="Vídeo pra renderizar",
             filetypes=[("Vídeos", "*.mp4 *.mov *.avi *.mkv *.webm"), ("Todos", "*.*")])
         if not p:
             return
-        if self.bg_mode == "none":
-            if not messagebox.askyesno(
-                    "Fundo 'Nenhum'", "O fundo está em 'Nenhum' — vai renderizar sem trocar o "
-                    "fundo. Continuar?"):
-                return
+        cap = cv2.VideoCapture(p)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 2))   # frame do meio
+        ok, frame0 = cap.read()
+        if not ok:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ok, frame0 = cap.read()
+        cap.release()
+        if not ok:
+            messagebox.showerror("Erro", "Não consegui ler um frame desse vídeo.")
+            return
+        self._abrir_preview_render(p, frame0)
+
+    def _abrir_preview_render(self, src, frame0):
+        C = self.COL
+        win = tk.Toplevel(self.root)
+        win.title("Pré-visualizar render — ajuste e confirme")
+        win.configure(bg=C["bg"])
+        win.transient(self.root)
+        lbl = tk.Label(win, bg=C["bg"], bd=0)
+        lbl.pack(padx=12, pady=12)
+        ttk.Label(win, style="Muted.TLabel", wraplength=720,
+                  text="Esse é um frame do vídeo com o fundo/ajustes atuais. Mexa nos controles da "
+                       "janela principal e clique 'Atualizar' até ficar a teu gosto. Depois "
+                       "'Renderizar vídeo todo'.").pack(padx=12, pady=(0, 8))
+        bar = ttk.Frame(win)
+        bar.pack(fill="x", padx=12, pady=(0, 12))
+
+        def atualizar():
+            out = self._compose_one(frame0.copy())
+            disp = self._fit(out, 760, 460)
+            rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
+            im = ImageTk.PhotoImage(Image.fromarray(rgb))
+            lbl.configure(image=im)
+            lbl.image = im
+
+        def renderizar():
+            win.destroy()
+            self._executar_render(src)
+
+        ttk.Button(bar, text="↻  Atualizar preview", command=atualizar).pack(side="left")
+        ttk.Button(bar, text="🎬  Renderizar vídeo todo", style="Accent.TButton",
+                   command=renderizar).pack(side="right")
+        ttk.Button(bar, text="Cancelar", command=win.destroy).pack(side="right", padx=8)
+        atualizar()
+
+    def _executar_render(self, src):
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = os.path.join(self.galeria, f"render_{ts}.mp4")
-        # snapshot das config atuais (o worker continua usando os originais)
-        engine = self.engine
-        bg_mode = self.bg_mode
-        bg_img = self.bg_img.copy() if (bg_mode == "image" and self.bg_img is not None) else None
+        engine, bg_mode = self.engine, self.bg_mode
+        bg_ip = self.bg_image_path if bg_mode == "image" else None
         bg_vp = self.bg_video_path if bg_mode == "video" else None
         blur, refine = self.blur, self.refine
         self.btn_render.config(state="disabled", text="🎬 Renderizando...")
+        self._rendering = True       # solta a webcam durante o render (libera CPU)
+
+        def fim(msg_ok=None, err=None):
+            self._rendering = False
+            self.btn_render.config(state="normal", text="🎬  Renderizar vídeo...")
+            if err:
+                messagebox.showerror("Erro no render", err)
+            else:
+                self.status.config(text="Render pronto.")
+                messagebox.showinfo("Pronto", msg_ok)
 
         def work():
             from agentes.render_video import render_arquivo
@@ -452,16 +543,12 @@ class CameraApp:
                 def pcb(i, tot):
                     txt = f"Renderizando {i}/{tot}..." if tot else f"Renderizando frame {i}..."
                     self.root.after(0, lambda: self.status.config(text=txt))
-                render_arquivo(p, out, engine=engine, bg_mode=bg_mode, bg_image_bgr=bg_img,
+                render_arquivo(src, out, engine=engine, bg_mode=bg_mode, bg_image_path=bg_ip,
                                bg_video_path=bg_vp, blur=blur, refine=refine, progress_cb=pcb)
-                self.root.after(0, lambda: (
-                    self.btn_render.config(state="normal", text="🎬 Renderizar vídeo..."),
-                    self.status.config(text="Render pronto."),
-                    messagebox.showinfo("Pronto", f"Vídeo renderizado salvo na galeria:\n{out}")))
+                self.root.after(0, lambda: fim(msg_ok=f"Vídeo renderizado salvo na galeria:\n{out}"))
             except Exception as e:
-                self.root.after(0, lambda: (
-                    self.btn_render.config(state="normal", text="🎬 Renderizar vídeo..."),
-                    messagebox.showerror("Erro no render", str(e))))
+                msg = str(e)
+                self.root.after(0, lambda: fim(err=msg))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -491,6 +578,15 @@ class CameraApp:
             self.matter = LiveMatter()
         t0, n = time.time(), 0
         while self.running:
+            if self._rendering:        # render offline: solta a câmera (libera CPU/webcam)
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                    self.cur_cam = None
+                with self._lock:
+                    self._frame = None
+                time.sleep(0.1)
+                continue
             if self.req_cam != self.cur_cam:
                 if cap:
                     cap.release()

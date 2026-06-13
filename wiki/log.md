@@ -332,6 +332,38 @@ Fatos verificados (contra o código):
 - **Robustez:** leitura/escrita em `try/except` — JSON corrompido ou disco cheio
   não quebra o app (só ignora). Nenhum arquivo fora de `wiki/` foi modificado.
 
+## [2026-06-13] fact | Render de vídeo: preview de 1 frame, solta a webcam, áudio robusto
+
+Três correções verificadas nesta sessão no render de vídeo do app de câmera
+(`camera_app.py` + `agentes/render_video.py`). Atualizadas [[components/camera-app]]
+(seção "Renderizar vídeo" reescrita + gotchas 7/8) e [[components/render-video]]
+(`render_arquivo`: assinatura, mux robusto, novos bugs corrigidos + integração).
+
+Fatos verificados (contra o código):
+1. **Preview de 1 frame antes de renderizar.** `_render_video` não renderiza direto:
+   abre o vídeo, pega o **frame do meio** (`CAP_PROP_POS_FRAMES = total//2`, fallback
+   frame 0) e abre um `tk.Toplevel` (`_abrir_preview_render`) com esse frame já
+   composto (fundo+ajustes atuais). Botões "↻ Atualizar preview" (recompõe com as
+   configs **vivas**), "🎬 Renderizar vídeo todo" (`Accent.TButton`) e "Cancelar". O
+   render real só dispara no `_executar_render`. Helpers novos: `_bg_for_frame(frame)`
+   (fundo BGR no tamanho do frame: vídeo→1º frame, imagem→`cv2.imread`, senão
+   desfoque), `_compose_one(frame)` (fundo + `compor` + `aplicar_ajustes`; reseta o
+   estado do RVM), `_fit(img,maxw,maxh)` (escala pra caber, nunca amplia).
+2. **Solta a webcam durante o render.** Nova flag `self._rendering`; quando `True` o
+   worker (`_loop`) **libera o `cap`** (`cap.release()`, `cap=None`, frame `None`) e
+   fica ocioso — a webcam/CPU não competem com o RVM do render (pesado).
+   `_executar_render` seta `_rendering=True` antes e `_rendering=False` no `fim()`; o
+   worker reabre a câmera sozinho depois.
+3. **Áudio corrigido (bug).** `render_arquivo` antes sondava o áudio com `ffprobe` +
+   match de string (`'"codec_type": "audio"'`) e às vezes falhava → saída **muda**.
+   Agora **sempre** roda `ffmpeg ... -map 0:v:0 -map 1:a:0?` — o `?` torna o áudio
+   **opcional** (entra se existir, ignorado sem erro se não). Verificado: clipe com
+   áudio → render mantém o áudio. Fallback: mux falhou → `os.replace` entrega o vídeo
+   sem áudio. Também: param `bg_image_bgr` → **`bg_image_path`** (`render_arquivo` lê
+   a imagem **original** com `cv2.imread` e faz `cobrir` no tamanho **do vídeo** —
+   antes recebia a imagem já no tamanho da câmera, o que degradava).
+Nenhum arquivo fora de `wiki/` foi modificado.
+
 ## [2026-06-13] fact | App de câmera: redesign da UI (tema escuro, painel rolável, vídeo responsivo)
 
 Redesign da UI verificado nesta sessão em `camera_app.py` (resolveu responsividade
