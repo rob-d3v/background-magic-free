@@ -14,3 +14,10 @@ requests>=2.31.0
 tqdm>=4.66.0
 huggingface_hub>=0.20.0
 matplotlib>=3.7.0
+gradio>=4.44.0
+# Modo AO VIVO (webcam -> camera virtual; roda em CPU)
+mediapipe>=0.10.35
+pyvirtualcam>=0.15.0
+pygrabber>=0.2          # lista nomes das cameras (Windows/DirectShow) no app de camera
+# Motor de matting de alta qualidade (RVM) no modo live — opcional, mais pesado
+# torch/torchvision ja listados acima; o modelo rvm_mobilenetv3.pth (~15MB) baixa via torch.hub

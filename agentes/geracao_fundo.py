@@ -131,3 +131,51 @@ def gerar_fundo(
             return output_path
 
     raise RuntimeError("Falha ao gerar fundo — nenhuma imagem retornada pelo ComfyUI")
+
+
+# ─── Alternativa self-contained (diffusers, sem servidor ComfyUI) ──────────
+# Usada pela interface Gradio: gera o fundo direto com diffusers, sem precisar
+# subir o ComfyUI em background. Requer GPU.
+
+_SD_TXT2IMG = None
+
+
+def gerar_fundo_diffusers(
+    prompt: str,
+    width: int,
+    height: int,
+    output_path: str | None = None,
+    negative_prompt: str = "person, human, people, ugly, blurry, low quality",
+    steps: int = 25,
+    cfg: float = 7.0,
+    seed: int = -1,
+    base_model: str = "stablediffusionapi/realistic-vision-v51",
+):
+    """
+    Gera imagem de fundo com Stable Diffusion 1.5 via diffusers (txt2img).
+    Mantem o pipe em cache para chamadas repetidas (preview). Requer GPU CUDA.
+    Retorna PIL.Image (e salva em output_path se fornecido).
+    """
+    global _SD_TXT2IMG
+    import torch
+    from diffusers import StableDiffusionPipeline
+
+    if _SD_TXT2IMG is None:
+        _SD_TXT2IMG = StableDiffusionPipeline.from_pretrained(
+            base_model, torch_dtype=torch.float16, safety_checker=None,
+        ).to("cuda")
+        _SD_TXT2IMG.set_progress_bar_config(disable=True)
+
+    # dimensoes multiplas de 8
+    w8, h8 = (width // 8) * 8, (height // 8) * 8
+    generator = torch.Generator("cuda").manual_seed(seed if seed != -1 else 12345)
+    img = _SD_TXT2IMG(
+        prompt=prompt, negative_prompt=negative_prompt,
+        width=w8, height=h8, num_inference_steps=steps,
+        guidance_scale=cfg, generator=generator,
+    ).images[0]
+
+    if output_path:
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        img.save(output_path)
+    return img

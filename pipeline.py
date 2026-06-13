@@ -1,18 +1,19 @@
 """
-pipeline.py — Orquestrador da pipeline IC-Light Video
+pipeline.py — Orquestrador da pipeline lumina-bg (IC-Light Video)
 
-Uso com fundo gerado por IA:
-    python pipeline.py \
-        --video /content/drive/MyDrive/iclight_pipeline/input/video.mp4 \
-        --prompt "modern studio with soft blue ambient lighting, cinematic" \
-        --output /content/drive/MyDrive/iclight_pipeline/output/video_final.mp4
+Roda local e no Colab. Paths resolvidos por config.py (nao mais hardcoded).
+Device (GPU/CPU) detectado automaticamente; sem GPU usa modo "compose" (sem
+relight). Com GPU usa IC-Light fbc (pessoa composta no fundo + reiluminada).
 
-Uso com fundo proprio:
-    python pipeline.py \
-        --video /content/drive/MyDrive/iclight_pipeline/input/video.mp4 \
-        --background /content/drive/MyDrive/iclight_pipeline/background/meu_fundo.png \
-        --prompt "soft ambient lighting" \
-        --output /content/drive/MyDrive/iclight_pipeline/output/video_final.mp4
+Exemplos:
+    # fundo gerado por IA (precisa GPU)
+    python pipeline.py --video meu.mp4 --prompt "modern studio, blue ambient light"
+
+    # fundo proprio
+    python pipeline.py --video meu.mp4 --background fundo.png --prompt "soft light"
+
+    # forcar so composicao (sem relight, roda em CPU)
+    python pipeline.py --video meu.mp4 --background fundo.png --modo compose
 """
 
 import argparse
@@ -22,134 +23,131 @@ import time
 
 from PIL import Image
 
-# Caminhos base
-BASE_DIR = "/content/drive/MyDrive/iclight_pipeline"
-FRAMES_RAW = f"{BASE_DIR}/frames/raw"
-FRAMES_NOBG = f"{BASE_DIR}/frames/nobg"
-FRAMES_RELIT = f"{BASE_DIR}/relit"
-BG_OUTPUT = f"{BASE_DIR}/background/bg.png"
-LOG_PATH = f"{BASE_DIR}/pipeline_log.json"
+from config import Paths, detectar_device
 
 
 def main():
-    parser = argparse.ArgumentParser(description="IC-Light Video Pipeline")
+    parser = argparse.ArgumentParser(description="lumina-bg — IC-Light Video Pipeline")
     parser.add_argument("--video", required=True, help="Caminho do video de entrada")
-    parser.add_argument("--prompt", required=True, help="Prompt para relighting (e geracao de fundo se nao usar --background)")
-    parser.add_argument("--output", required=True, help="Caminho do video de saida")
+    parser.add_argument("--prompt", default="cinematic lighting", help="Prompt p/ relight e geracao de fundo")
+    parser.add_argument("--output", default=None, help="Caminho do video final (default: <base>/output/video_final.mp4)")
     parser.add_argument("--background", default=None, help="Imagem de fundo propria (pula geracao por IA)")
-    parser.add_argument("--steps", type=int, default=25, help="Inference steps SD/IC-Light")
-    parser.add_argument("--seed", type=int, default=42, help="Seed para reproducibilidade")
+    parser.add_argument("--base", default=None, help="Diretorio de trabalho (default: ./workspace ou Drive no Colab)")
+    parser.add_argument("--modo", choices=["auto", "relight", "compose"], default="auto",
+                        help="relight=IC-Light (GPU); compose=so alpha (CPU); auto=decide por GPU")
+    parser.add_argument("--steps", type=int, default=20, help="Inference steps SD/IC-Light")
+    parser.add_argument("--seed", type=int, default=12345, help="Seed para reproducibilidade")
     parser.add_argument("--crf", type=int, default=18, help="Qualidade H.264 (18=alta, 28=menor)")
-    parser.add_argument("--cfg-bg", type=float, default=7.0, help="CFG scale para geracao de fundo")
-    parser.add_argument("--cfg-relight", type=float, default=2.0, help="CFG scale para IC-Light")
+    parser.add_argument("--cfg-bg", type=float, default=7.0, help="CFG scale p/ geracao de fundo")
+    parser.add_argument("--cfg-relight", type=float, default=7.0, help="CFG scale p/ IC-Light fbc")
+    parser.add_argument("--negative", default="", help="Negative prompt p/ relight")
     args = parser.parse_args()
+
+    paths = Paths(args.base).criar_dirs()
+    output = args.output or f"{paths.output_dir}/video_final.mp4"
+    dev = detectar_device()
+
+    # Decidir modo
+    modo = args.modo
+    if modo == "auto":
+        modo = "relight" if dev["pode_relight"] else "compose"
 
     usar_fundo_proprio = args.background is not None
 
-    pipeline_log = {"etapas": [], "erros_total": 0}
+    pipeline_log = {"etapas": [], "erros_total": 0, "device": dev, "modo": modo}
     pipeline_start = time.time()
 
     print("=" * 60)
-    print("  IC-Light Video Pipeline — lumina-bg")
-    if usar_fundo_proprio:
-        print("  Modo: fundo proprio")
-    else:
-        print("  Modo: fundo gerado por IA")
+    print("  lumina-bg — IC-Light Video Pipeline")
+    print(f"  Device: {dev['device']} ({dev['gpu_name'] or 'sem GPU'}, "
+          f"{dev['vram_gb'] or '?'}GB)  |  Modo: {modo}")
+    print(f"  Fundo: {'proprio' if usar_fundo_proprio else 'gerado por IA'}")
+    print(f"  Workspace: {paths.base}")
     print("=" * 60)
 
-    # ─── AGENTE 1 — Extracao de Frames ───────────────────────────
+    if modo == "relight" and not dev["pode_relight"]:
+        print("  AVISO: modo relight pedido mas sem GPU suficiente. "
+              "Caindo para 'compose'.")
+        modo = "compose"
+
+    # ─── AGENTE 1 — Extracao ──────────────────────────────────────
     print("\n[1/5] Extraindo frames...")
     from agentes.extracao import extrair_frames
-
-    meta = extrair_frames(args.video, FRAMES_RAW)
+    meta = extrair_frames(args.video, paths.frames_raw)
     print(f"    {meta['total_frames']} frames @ {meta['fps']}fps — {meta['width']}x{meta['height']}")
     pipeline_log["etapas"].append({"etapa": "extracao", **meta})
 
-    # ─── AGENTE 2 — Remocao de Fundo ─────────────────────────────
-    print("\n[2/5] Removendo fundo (rembg GPU)...")
+    # ─── AGENTE 2 — Remocao de fundo ──────────────────────────────
+    print("\n[2/5] Removendo fundo (rembg)...")
     from agentes.remocao import remover_fundo
-
-    result_rembg = remover_fundo(FRAMES_RAW, FRAMES_NOBG, log_path=LOG_PATH)
+    result_rembg = remover_fundo(paths.frames_raw, paths.frames_nobg, log_path=paths.log_path)
     pipeline_log["etapas"].append({"etapa": "remocao_fundo", **result_rembg})
     pipeline_log["erros_total"] += result_rembg["erros"]
 
-    # ─── AGENTE 3 — Fundo ────────────────────────────────────────
+    # ─── AGENTE 3 — Fundo ─────────────────────────────────────────
     if usar_fundo_proprio:
         print(f"\n[3/5] Usando fundo proprio: {args.background}")
-        os.makedirs(os.path.dirname(BG_OUTPUT), exist_ok=True)
-        # Redimensionar para o tamanho do video e salvar como bg.png
         bg_img = Image.open(args.background).convert("RGB")
         bg_img = bg_img.resize((meta["width"], meta["height"]), Image.LANCZOS)
-        bg_img.save(BG_OUTPUT)
-        print(f"    Fundo redimensionado para {meta['width']}x{meta['height']}")
-        pipeline_log["etapas"].append({"etapa": "fundo", "modo": "proprio", "arquivo": args.background})
+        bg_img.save(paths.bg_output)
+        pipeline_log["etapas"].append({"etapa": "fundo", "modo": "proprio"})
     else:
         print("\n[3/5] Gerando fundo com Stable Diffusion 1.5...")
         from agentes.geracao_fundo import iniciar_comfyui, gerar_fundo
-
         comfy_proc = iniciar_comfyui()
         try:
             gerar_fundo(
-                prompt=args.prompt,
-                width=meta["width"],
-                height=meta["height"],
-                output_path=BG_OUTPUT,
-                steps=args.steps,
-                cfg=args.cfg_bg,
-                seed=args.seed,
+                prompt=args.prompt, width=meta["width"], height=meta["height"],
+                output_path=paths.bg_output, steps=args.steps, cfg=args.cfg_bg, seed=args.seed,
             )
-            pipeline_log["etapas"].append({"etapa": "fundo", "modo": "ia", "status": "ok"})
+            pipeline_log["etapas"].append({"etapa": "fundo", "modo": "ia"})
         finally:
             comfy_proc.terminate()
 
-    # ─── AGENTE 4 — Relighting com IC-Light ───────────────────────
-    print("\n[4/5] Aplicando relighting com IC-Light...")
-    from agentes.relighting import carregar_iclight, aplicar_relighting
-
-    pipe = carregar_iclight()
-    result_relight = aplicar_relighting(
-        pipe=pipe,
-        frames_nobg_dir=FRAMES_NOBG,
-        background_path=BG_OUTPUT,
-        output_dir=FRAMES_RELIT,
-        prompt=args.prompt,
-        steps=args.steps,
-        cfg=args.cfg_relight,
-        seed=args.seed,
-        log_path=LOG_PATH,
-    )
-    pipeline_log["etapas"].append({"etapa": "relighting", **result_relight})
-    pipeline_log["erros_total"] += result_relight["erros"]
-
-    # Liberar VRAM
-    del pipe
-    import torch
-    torch.cuda.empty_cache()
+    # ─── AGENTE 4 — Relight (fbc) ou Compose ──────────────────────
+    if modo == "relight":
+        print("\n[4/5] Relighting com IC-Light fbc...")
+        from agentes.relighting import carregar_iclight, aplicar_relighting
+        low_vram = (dev["vram_gb"] or 99) < 8.0
+        pipe = carregar_iclight(device="cuda", low_vram=low_vram)
+        result = aplicar_relighting(
+            pipe=pipe, frames_nobg_dir=paths.frames_nobg, background_path=paths.bg_output,
+            output_dir=paths.frames_relit, prompt=args.prompt, negative_prompt=args.negative,
+            steps=args.steps, cfg=args.cfg_relight, seed=args.seed, log_path=paths.log_path,
+        )
+        del pipe
+        import torch
+        torch.cuda.empty_cache()
+        pipeline_log["etapas"].append({"etapa": "relighting", **result})
+        pipeline_log["erros_total"] += result["erros"]
+    else:
+        print("\n[4/5] Compondo pessoa no fundo (modo compose, CPU)...")
+        from agentes.composicao import compor_batch
+        result = compor_batch(
+            frames_nobg_dir=paths.frames_nobg, background_path=paths.bg_output,
+            output_dir=paths.frames_relit, log_path=paths.log_path,
+        )
+        pipeline_log["etapas"].append({"etapa": "composicao", **result})
+        pipeline_log["erros_total"] += result["erros"]
 
     # ─── AGENTE 5 — Exportacao ────────────────────────────────────
     print("\n[5/5] Exportando video final...")
     from agentes.exportacao import exportar_video
-
     result_export = exportar_video(
-        frames_dir=FRAMES_RELIT,
-        video_original=args.video,
-        output_path=args.output,
-        fps=meta["fps"],
-        crf=args.crf,
+        frames_dir=paths.frames_relit, video_original=args.video,
+        output_path=output, fps=meta["fps"], crf=args.crf,
     )
     pipeline_log["etapas"].append({"etapa": "exportacao", **result_export})
 
-    # ─── Relatorio final ──────────────────────────────────────────
     pipeline_log["tempo_total_s"] = round(time.time() - pipeline_start, 2)
-
-    with open(LOG_PATH, "w") as f:
+    with open(paths.log_path, "w") as f:
         json.dump(pipeline_log, f, indent=2)
 
     print("\n" + "=" * 60)
-    print(f"  Concluido! Video salvo em: {args.output}")
+    print(f"  Concluido! Video salvo em: {output}")
     print(f"  Tempo total: {pipeline_log['tempo_total_s']}s")
     if pipeline_log["erros_total"] > 0:
-        print(f"  AVISO: {pipeline_log['erros_total']} frame(s) com erro — ver {LOG_PATH}")
+        print(f"  AVISO: {pipeline_log['erros_total']} frame(s) com erro — ver {paths.log_path}")
     print("=" * 60)
 
 

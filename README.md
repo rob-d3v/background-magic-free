@@ -23,6 +23,103 @@ Voce grava um video qualquer (pode ser no celular, webcam, tanto faz) e essa fer
 
 ---
 
+## Dois modos
+
+| | **Studio** (gravado) | **Live** (ao vivo) |
+|---|---|---|
+| Pra que | video do YouTube, conteudo gravado | reuniao, stream, OBS, Google Meet, Zoom |
+| Como troca o fundo | recorte (rembg) + fundo IA (SD 1.5) + **reilumina** voce (IC-Light) | recorte em tempo real (MediaPipe) + fundo novo |
+| Reilumina voce? | **Sim** — parece que voce mudou de ambiente | Nao (recorte + troca de fundo + casa cor leve) |
+| Velocidade | segundos por frame (lote) | ~30fps na webcam |
+| Onde roda | GPU (Google Colab T4) | seu PC, **roda em CPU** |
+
+> Por que o Live nao reilumina? Reiluminar cada frame com IC-Light nao roda a
+> 30fps numa GPU de 4GB — e fisica, nao preguica. A "magia" de reiluminar fica
+> no modo Studio (gravado).
+
+---
+
+## Interface (rodar no seu PC)
+
+Em vez do notebook, da pra usar uma interface visual:
+
+```bash
+pip install -r requirements.txt
+python app.py            # abre em http://127.0.0.1:7860
+```
+
+A interface tem **duas abas**: *Studio* (offline, vídeo gravado) e *Live* (webcam).
+
+**Aba Studio — enviar vídeo e renderizar** (fluxo guiado: enviar vídeo → escolher
+1 frame → definir fundo → pré-visualizar nesse frame → aplicar a todos → baixar).
+Três modos:
+- **Trocar fundo HD (RVM, CPU)** — recorte de alta qualidade (mesmo motor RVM do
+  live, mas em qualidade total, sem pressa). **Não precisa de GPU.** É o caminho
+  recomendado pra trocar fundo de vídeo gravado.
+- **Compor (rápido, CPU)** — recorte via rembg, mais rápido, borda mediana.
+- **Reiluminar (IC-Light, GPU)** — **reilumina** a pessoa pra casar com o novo
+  ambiente (o efeito mais forte), mas exige GPU (Google Colab T4).
+
+### Modo Live — webcam no OBS / Meet / Zoom
+
+Troca o fundo da sua webcam em tempo real e publica numa **camera virtual** que
+qualquer app de video enxerga.
+
+**App de camera (recomendado)** — janela com todos os controles:
+
+```bash
+python camera_app.py
+```
+
+Tem: escolher entre as cameras do PC, **gravar video** e **tirar foto** (vao pra
+galeria), **zoom**, **enquadramento**, **espelhar**, **brilho / contraste /
+saturacao / nitidez**, fundo (nenhum / desfocado / **imagem** / **video em loop**),
+botao de **camera virtual** e **abrir a galeria**. Tudo ao vivo, sem mexer em codigo.
+
+> **Fundo de video:** alem de imagem, da pra usar um **video** como fundo (ele roda
+> em loop atras de voce). Tanto no app de camera (botao "Escolher video de fundo")
+> quanto no render offline.
+
+> **Renderizar video no proprio app:** o botao **"🎬 Renderizar video..."** pega um
+> arquivo de video, aplica o fundo + ajustes atuais (com o motor escolhido — use
+> **RVM** pra qualidade) e salva o resultado na galeria, com o audio original. Nao
+> precisa do Gradio pra trocar fundo de video gravado.
+
+> **Suas configuracoes ficam salvas.** Camera, motor, fundo, espelhar e todos os
+> ajustes (zoom, brilho, contraste, etc.) sao gravados automaticamente num cache
+> (`workspace/camera_app_config.json`). Ao reabrir o app, ele volta do jeito que
+> voce deixou.
+
+**Motor de recorte (qualidade da borda):**
+- **MediaPipe** (padrao) — rapido (~15-30fps CPU), bom pra fundo simples.
+- **RVM** (RobustVideoMatting) — alpha de verdade: **mantem cabelo, nao "come" o
+  rosto**, sem franja de halo. Mais pesado (~10fps @540p CPU). Escolha no dropdown
+  "Motor de recorte" (ou `python live.py --engine rvm`). O modelo (~15MB) baixa
+  sozinho na 1a vez.
+
+**Linha de comando (avancado / scripts):**
+
+```bash
+python live.py --background fundo.jpg          # fundo a partir de uma imagem
+python live.py --blur 45                        # so desfoca o fundo (estilo Meet)
+python live.py --background fundo.jpg --preview  # com janela de preview
+python live.py --camera 1                        # escolhe a 2a webcam
+```
+
+No Meet/Zoom/OBS, escolha a camera **"OBS Virtual Camera"**.
+
+> **Pre-requisito (Windows):** instale o **OBS Studio** uma vez — ele registra a
+> camera virtual no sistema. Nao precisa ficar aberto.
+
+**Borda limpa:** por padrao o recorte usa refino de borda (guided filter + remocao
+de ilhas falsas) — tira o "halo" e cola a silhueta no contorno real. Pra priorizar
+fps em vez de borda, use `--fast`.
+
+Resolucao x fluidez (medido em CPU, borda alta / `--fast`):
+`640x360` ≈ 33 / 42fps · `960x540` ≈ 15 / 21fps (padrao) · `1280x720` ≈ 9 / 13fps.
+
+---
+
 ## O que eu preciso?
 
 - Uma conta Google (pra usar o Google Colab + Google Drive)

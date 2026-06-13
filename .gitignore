@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# Workspace / runtime (gerado em execucao)
+workspace/
+videos/
+_validacao/
+
+# Modelos baixados automaticamente (rvm via torch.hub; selfie_segmenter via baixar_modelo)
+models/
+
+# Saidas / midia gerada
+galeria/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# OS
+Thumbs.db
+.DS_Store

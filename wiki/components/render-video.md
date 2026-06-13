@@ -1,0 +1,140 @@
+---
+tags: [component, render, offline, matting, rvm, cpu, studio]
+date: 2026-06-13
+status: stable
+source: agentes/render_video.py
+---
+
+# render-video — Render offline (RVM/MediaPipe), troca de fundo sem GPU
+
+`agentes/render_video.py` — **render offline** que recorta a pessoa de cada frame
+com o **motor de matting do live** (RVM ou MediaPipe — [[concepts/rvm-matting]] /
+[[concepts/realtime-matting]]) e compõe sobre o novo fundo. **Não usa rembg**
+([[components/remocao]]) e **não reilumina** (sem IC-Light) — troca o fundo com
+recorte limpo. Tem **duas funções de entrada**:
+
+| Função | Entrada | Saída | Áudio | Usado por |
+|---|---|---|---|---|
+| `render_matting(...)` | **diretório de frames** `*.png` | PNGs compostos num dir | — (áudio no `exportar_video` depois) | modo Studio (`app.py`) |
+| `render_arquivo(...)` | **arquivo de vídeo** (lê direto, sem extrair frames) | um **mp4** | **remuxa o áudio original** | botão 🎬 do [[components/camera-app]] |
+
+Ambas compartilham `_build_matter(engine)` e `_VIDEO_EXT`.
+
+É o caminho **"poderoso, sem GPU"** (`app.py` Studio e o app de câmera): borda
+melhor que o [[components/composicao|compor]] (rembg) e dispensa a GPU/Colab do
+relight IC-Light ([[components/relighting]]).
+
+## `render_matting` — render a partir de um diretório de frames
+`render_matting(frames_dir, background_path, output_dir, engine="rvm",
+color_match=0.12, feather=2, progress_cb=None)`:
+1. Lê os frames `*.png` de `frames_dir` em ordem (`sorted`).
+2. **Fundo de imagem ou de vídeo.** Se `background_path` termina em extensão de
+   vídeo (`_VIDEO_EXT = .mp4/.mov/.avi/.mkv/.webm`), abre um `VideoFundo`
+   ([[components/live-mode]]) e **avança 1 frame de fundo por frame de saída**
+   (loop se o vídeo de fundo for mais curto que o clipe). Caso contrário, faz
+   **cover-crop** do fundo de imagem (`cobrir`, de `agentes/matting_live.py`) para
+   o tamanho do 1º frame, fixo para todos os frames (como antes).
+3. Constrói o motor via `_build_matter(engine)` (`RVMMatter` para `"rvm"`, senão
+   `LiveMatter`) e, **para cada frame em ordem**, chama
+   `matter.compor(frame, bg, color_match, feather)` → grava o PNG resultante.
+4. `matter.close()` ao final; imprime `processados`/`tempo_s`/`fps`.
+
+> **Coerência temporal — vantagem do offline.** O RVM é um matter de **vídeo** com
+> **estado recorrente** entre frames ([[concepts/rvm-matting]]). Processar os
+> frames **em ordem** dá menos tremor de borda — vantagem que o [[components/live-mode|live]]
+> (frame-isolado) e o `compor` (rembg, por-frame) **não** têm.
+
+## `render_arquivo` — render direto de um arquivo de vídeo (com áudio)
+`render_arquivo(input_path, output_path, engine="rvm", bg_mode, bg_image_bgr=None,
+bg_video_path=None, blur=45, color_match=0.12, refine=True, progress_cb=None)`.
+Renderiza um **arquivo de vídeo inteiro** trocando o fundo, **sem extrair frames
+em disco** — chamado pelo botão **🎬 Renderizar vídeo...** do [[components/camera-app]].
+
+1. Abre o vídeo com **`cv2.VideoCapture`** e lê `fps`/`w`/`h`/`total` (`fps` cai pra
+   `24.0` se o container não reporta).
+2. Constrói o matter via `_build_matter(engine)`. Pré-resolve o fundo conforme
+   `bg_mode`: `video` → `VideoFundo(bg_video_path)` em loop; `image` → `cobrir(
+   bg_image_bgr, w, h)`; senão (`blur`) → `fundo_desfocado(frame, blur|1)` por
+   frame; `none` → passa o frame cru (sem matting).
+3. **Para cada frame** (`cap.read()` em loop): compõe `matter.compor(frame, bg,
+   color_match, refine=refine)` e escreve num **mp4 temporário** (`VideoWriter`,
+   fourcc **`mp4v`**, `<output>_noaudio.mp4`). `progress_cb(i, total)` por frame.
+4. **Remux do áudio original** (passo que o `render_matting` não tem): `ffprobe`
+   detecta se o input tem stream de áudio; **se tem**, `ffmpeg -c:v copy -c:a aac
+   -map 0:v:0 -map 1:a:0 -shortest` junta o vídeo renderizado (sem áudio) com o
+   áudio do input e remove o temporário; **se não tem**, só `os.replace` (renomeia
+   o temporário pra saída final).
+
+> **Diferenças vs `render_matting`:** (a) entrada é **arquivo**, não diretório de
+> frames; (b) **escreve mp4** direto (não PNGs); (c) **carrega o áudio** original;
+> (d) tem o modo de fundo **`blur`** (`fundo_desfocado` por frame) e **`none`**
+> (passthrough sem matting), além de imagem/vídeo; (e) usa `refine` (repassa ao
+> `compor`) em vez de `feather`. Verificado end-to-end: 61 frames → mp4 válido,
+> áudio remuxado quando o input tem áudio.
+
+## Inputs / Outputs (`render_matting`)
+- **Inputs:** `frames_dir` (frames crus, ex. `frames_raw/`), `background_path`
+  (imagem `bg.png` **ou** vídeo `.mp4/.mov/.avi/.mkv/.webm` → fundo animado em loop),
+  `output_dir`, `engine` (`"rvm"` | `"mediapipe"`), `color_match`, `feather`,
+  `progress_cb`.
+- **Output:** PNGs RGB compostos em `output_dir`; `dict`
+  `{processados, tempo_s, engine}`.
+
+## Parâmetros-chave
+| Param | Default | Nota |
+|---|---|---|
+| `engine` | `"rvm"` | motor de matting; `"rvm"` (alpha real) ou `"mediapipe"` |
+| `color_match` | `0.12` | casa levemente a cor da pessoa ao fundo (sem relight) |
+| `feather` | `2` | suaviza a borda da máscara (px) |
+| `progress_cb` | `None` | `cb(done, total)` por frame — usado pela barra do Studio |
+
+## Performance (medida, CPU)
+- **RVM @720p ≈ 2.6 fps** (incl. `imread`/`imwrite`). Mais lento que o live
+  (RVM ~9.6fps @540p, [[concepts/rvm-matting]]) por causa da resolução maior + IO,
+  mas é **offline** — sem pressão de fps.
+- Ex.: 1 min @30fps = **1800 frames ≈ 12 min**.
+- **Qualidade:** recorte limpo (rosto/cabelo intactos, sem blob no ombro, sem
+  halo) — mesma qualidade do RVM live, verificado num frame renderizado.
+
+## Gotchas
+- **Resume reinicia o estado recorrente do RVM.** O loop pula frames já existentes
+  na saída — mas isso **zera** a coerência temporal do RVM no ponto retomado. Para
+  um **render limpo, apague a saída antes**: o `app.py` faz
+  `shutil.rmtree(PATHS.frames_relit)` antes de chamar `render_matting`.
+- **Não passa por rembg.** O modo HD recorta direto do **frame cru** e **pula** o
+  passo `remover_fundo` ([[components/remocao]]).
+- **Não reilumina.** A luz da pessoa continua a do vídeo original (como o
+  [[components/composicao|compor]] e o [[components/live-mode|live]]); relight real
+  só no modo IC-Light ([[components/relighting]]).
+- **Fundo de vídeo em loop.** Se `background_path` for um vídeo (`_VIDEO_EXT`), o
+  `VideoFundo` avança 1 frame por frame de saída e **dá loop** quando o vídeo de
+  fundo é mais curto que o clipe — então o clipe inteiro sempre tem fundo, mas o
+  fundo se repete. Fundo de imagem continua fixo.
+
+## Integração no Studio (`app.py`)
+O modo Studio (Gradio) tem **3 modos** — constantes em `app.py`:
+- `MODO_HD = "Trocar fundo HD (RVM, CPU)"` — usa este render.
+- `MODO_COMPOR = "Compor (rapido, CPU)"` — rembg + [[components/composicao]].
+- `MODO_RELIGHT = "Reiluminar (IC-Light, GPU)"` — [[components/relighting]].
+
+Default = `MODO_RELIGHT` se há GPU (`DEV["pode_relight"]`), senão `MODO_HD`.
+
+No modo HD:
+- **Preview** (`cb_preview`): recorta o **frame cru** com `_offline_matter()` — um
+  `RVMMatter` cacheado, com **`.reset()`** antes (zera o estado recorrente para um
+  preview de 1 frame; método novo em `agentes/matting_rvm.py`).
+- **Aplicar** (`cb_aplicar`): `shutil.rmtree(frames_relit)` → `render_matting(
+  frames_raw, bg_output, frames_relit, engine="rvm", ...)` → `exportar_video`
+  ([[components/exportacao]], com o áudio original). **Pula** o `remover_fundo`.
+
+## Integração no app de câmera (`camera_app.py`)
+O botão **🎬 Renderizar vídeo...** ([[components/camera-app]]) chama
+`render_arquivo(...)` numa thread, passando um **snapshot** das configs atuais do
+app (engine, bg_mode, bg_img/bg_video_path, blur, refine). É a forma de aplicar o
+mesmo recorte/fundo do live a um vídeo gravado **com áudio**, sem passar pelo
+Studio.
+
+## Relacionados
+[[concepts/rvm-matting]] · [[components/camera-app]] · [[components/live-mode]] ·
+[[components/composicao]] · [[components/exportacao]] · [[components/remocao]] ·
+[[components/relighting]] · [[concepts/gpu-vram-local-vs-colab]] · [[index]]
