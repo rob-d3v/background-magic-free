@@ -29,6 +29,9 @@ do pipeline de refino de borda do MediaPipe (guided filter / threshold / erode /
 abertura morfológica). O `compor()` do RVM só aplica `feather` opcional e
 `color_match` leve.
 
+Além do alpha (`pha`), o RVM devolve um **foreground descontaminado** (`fgr`) que o
+`compor()` usa como cor da pessoa — ver "Foreground descontaminado" abaixo.
+
 ### Alpha real vs confidence mask
 - **Confidence mask (MediaPipe):** probabilidade por pixel de "ser pessoa", em
   baixa-res, suave e desalinhada da borda → precisa de threshold + morfologia +
@@ -59,20 +62,64 @@ ver [[components/render-video]]).
 
 ## downsample_ratio
 `downsample_ratio=0.4` (default no `RVMMatter`): o modelo processa internamente uma
-versão reduzida do frame pra estimar o alpha e reprojeta na resolução cheia. É o
-botão de **velocidade × precisão de borda** do RVM — menor = mais rápido, borda um
-pouco mais grossa.
+versão reduzida do frame na **rede coarse** pra estimar o alpha e reprojeta na
+resolução cheia. É o botão de **velocidade × precisão de borda** do RVM — menor =
+mais rápido, borda um pouco mais grossa.
+
+> **0.4 é o ratio de tempo real.** Mira ~512px no maior lado — bom pro live. No
+> **render offline** (sem pressão de fps) vale subir o ratio pra ganhar detalhe de
+> cabelo: o `render_video.py` calcula um **`_dr_qualidade(w,h)`** mirando ~720px.
+> Ver "downsample_ratio de qualidade no render offline" abaixo e
+> [[components/render-video]].
+
+### downsample_ratio de qualidade no render offline
+No render offline (`agentes/render_video.py`, [[components/render-video]]) o RVM usa
+um ratio **maior** que o default, calculado por:
+
+```
+_dr_qualidade(w, h) = clamp(720 / max(w, h), 0.35, 0.7)
+```
+
+Mira a rede coarse em **~720px** no maior lado (mais detalhe de cabelo) em vez de
+~512px. Ex.: **720p → dr ≈ 0.56**, **1080p → dr ≈ 0.375**. Como o render é offline,
+vale o custo extra. `_build_matter(engine, dr=None)` aceita o ratio; `render_matting`
+e `render_arquivo` passam `_dr_qualidade(w,h)` quando `engine=="rvm"`. Verificado:
+render RVM com `fgr` + dr de qualidade funciona, áudio preservado.
+
+## Foreground descontaminado (`fgr`) — mata a aura branca do cabelo
+O RVM devolve **dois** tensores úteis por frame: o alpha `pha` **e** um foreground
+`fgr` (**foreground estimado/descontaminado**). O `compor()` compõe usando o `fgr`
+como cor da pessoa, não o frame original:
+
+```
+out = fgr * alpha + bg * (1 - alpha)     # correto (descontaminado)
+out = frame * alpha + bg * (1 - alpha)   # antigo (aura branca)
+```
+
+**Por que a aura aparecia.** Nos pixels de borda (cabelo fino), o **frame original**
+carrega uma **mistura** da cor do fundo ANTIGO (tipicamente claro). Compondo com o
+frame cru, essa mistura clara vaza pro contorno do cabelo → vira uma **"aura/halo
+branca"**, mesmo com o `alpha` perfeito. O `fgr` do RVM já **estima a cor pura do
+foreground** (descontaminada do fundo antigo), então a borda do cabelo compõe limpa
+sobre o fundo novo. Verificado: sobre fundo escuro, a aura clara some no `fgr` vs o
+frame cru. Melhora a borda **no live E no render** (o preview do Studio também passa
+a usar `fgr`).
 
 ## Fluxo de tensor (entrada/saída)
 1. Frame **BGR** → `cv2.cvtColor` para **RGB** → `float32 / 255.0` (normaliza [0,1]).
 2. `torch.from_numpy(rgb).permute(2,0,1).unsqueeze(0)` → tensor **[1, C, H, W]**.
-3. `with torch.no_grad(): _fgr, pha, *rec = model(src, *rec, downsample_ratio=dr)`.
-4. Saída `pha` (alpha) → `pha[0,0].numpy().copy()`.
+3. `with torch.no_grad(): fgr, pha, *rec = model(src, *rec, downsample_ratio=dr)`.
+4. **`_infer(frame)` devolve `(fgr_bgr, pha)`:**
+   - **`fgr`** → `fgr[0].permute(1,2,0).numpy()` → RGB[0,1] → **BGR float 0..255**
+     (`np.ascontiguousarray(f[:,:,::-1]) * 255`).
+   - **`pha`** (alpha) → `pha[0,0].numpy().copy()`.
+5. `compor()` usa o par `(fgr, pha)`; `mask()` usa só `_infer(...)[1]` (o alpha).
 
-> **`.copy()` obrigatório.** O numpy retornado **compartilha a memória do tensor**,
-> que é liberada ao sair do escopo — sem `.copy()` o array fica apontando para
-> memória inválida (mesmo tipo de gotcha do `.copy()` no MediaPipe, em
-> [[concepts/realtime-matting]]).
+> **`.copy()` / `ascontiguousarray` obrigatório.** O numpy retornado **compartilha a
+> memória do tensor**, que é liberada ao sair do escopo — sem `.copy()` (no `pha`)
+> ou `np.ascontiguousarray` (no `fgr`, que também desfaz o slice reverso `::-1`) o
+> array fica apontando para memória inválida (mesmo tipo de gotcha do `.copy()` no
+> MediaPipe, em [[concepts/realtime-matting]]).
 
 ## Performance (medida, CPU, torch 2.12.0)
 - **~9.6 fps @ 960×540** (104 ms/frame).

@@ -439,3 +439,33 @@ vídeo, independente do motor selecionado pro live/preview (o RVM dá a melhor b
 ver [[concepts/rvm-matting]]). O motor do live/preview continua selecionável
 (MediaPipe pra scrub rápido); só o render final é fixo em RVM. Atualizada
 [[components/camera-app]] (`_aplicar_render` não faz mais snapshot de `engine`).
+
+## [2026-06-13] fact | RVM: foreground descontaminado (`fgr`) + downsample_ratio de qualidade no render
+
+Duas melhorias de qualidade do RVM verificadas nesta sessão. Atualizadas
+[[concepts/rvm-matting]] (seções novas "Foreground descontaminado" e
+"downsample_ratio de qualidade no render offline"; fluxo de tensor reescrito p/
+`_infer` devolvendo `(fgr_bgr, pha)`) e [[components/render-video]] (render RVM usa
+`fgr` + `_dr_qualidade`).
+
+Fatos verificados (contra o código):
+1. **Foreground descontaminado (`fgr`) — mata a aura branca do cabelo**
+   (`agentes/matting_rvm.py`). Antes o `compor` usava só `pha` (alpha) e compunha com
+   o **frame original**: `out = frame*alpha + bg*(1-alpha)`. Nos pixels de borda
+   (cabelo), o frame original carrega uma **mistura da cor do fundo ANTIGO** (claro) →
+   **aura/halo branca** no contorno, mesmo com alpha perfeito. Fix: o RVM já devolve
+   `fgr` (foreground **estimado/descontaminado**) além do `pha`; agora `out =
+   fgr*alpha + bg*(1-alpha)`. Novo `_infer(frame)` devolve `(fgr_bgr, pha)`:
+   `fgr[0].permute(1,2,0).numpy()` → RGB[0,1] → BGR float 0..255 via
+   `np.ascontiguousarray(f[:,:,::-1])*255`; `pha[0,0].numpy().copy()`. `mask()` usa
+   `_infer(...)[1]`. Melhora a borda de cabelo no **live E no render** (preview do
+   Studio também usa `fgr`). Verificado: sobre fundo escuro a aura clara some no `fgr`
+   vs o frame cru.
+2. **`downsample_ratio` de qualidade no render offline** (`agentes/render_video.py`).
+   Nova `_dr_qualidade(w,h) = clamp(720/max(w,h), 0.35, 0.7)` mira a rede coarse do
+   RVM em ~720px (mais detalhe de cabelo) em vez do default 0.4 (~512px, tempo real).
+   `_build_matter(engine, dr=None)` aceita o ratio; `render_matting` e `render_arquivo`
+   passam `_dr_qualidade(w,h)` quando `engine=="rvm"`. Render é offline → vale o custo.
+   Ex.: 720p → dr ≈ 0.56, 1080p → dr ≈ 0.375. Verificado: render RVM com `fgr` + dr
+   funciona, áudio preservado.
+Nenhum arquivo fora de `wiki/` foi modificado.

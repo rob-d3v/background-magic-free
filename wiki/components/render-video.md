@@ -18,7 +18,17 @@ recorte limpo. Tem **duas funções de entrada**:
 | `render_matting(...)` | **diretório de frames** `*.png` | PNGs compostos num dir | — (áudio no `exportar_video` depois) | modo Studio (`app.py`) |
 | `render_arquivo(...)` | **arquivo de vídeo** (lê direto, sem extrair frames) | um **mp4** | **remuxa o áudio original** | botão 🎬 do [[components/camera-app]] |
 
-Ambas compartilham `_build_matter(engine)` e `_VIDEO_EXT`.
+Ambas compartilham `_build_matter(engine, dr=None)` e `_VIDEO_EXT`.
+
+> **Qualidade no offline: `fgr` descontaminado + `_dr_qualidade`.** O render herda
+> as duas melhorias de qualidade do RVM ([[concepts/rvm-matting]]): (1) o `compor()`
+> usa o **foreground descontaminado** `fgr` (não o frame cru) → mata a **aura branca
+> do cabelo** na borda; (2) quando `engine=="rvm"`, ambas as funções passam um
+> **`downsample_ratio` maior** via `_dr_qualidade(w,h) = clamp(720/max(w,h), 0.35,
+> 0.7)` para `_build_matter(engine, dr=...)`, mirando a rede coarse em **~720px**
+> (mais detalhe de cabelo) em vez dos ~512px do default 0.4 do live. Ex.: 720p → dr
+> ≈ 0.56, 1080p → dr ≈ 0.375. Como o render é offline (sem pressão de fps), vale o
+> custo. Verificado: render RVM com `fgr` + dr de qualidade funciona, áudio preservado.
 
 É o caminho **"poderoso, sem GPU"** (`app.py` Studio e o app de câmera): borda
 melhor que o [[components/composicao|compor]] (rembg) e dispensa a GPU/Colab do
@@ -34,9 +44,11 @@ color_match=0.12, feather=2, progress_cb=None)`:
    (loop se o vídeo de fundo for mais curto que o clipe). Caso contrário, faz
    **cover-crop** do fundo de imagem (`cobrir`, de `agentes/matting_live.py`) para
    o tamanho do 1º frame, fixo para todos os frames (como antes).
-3. Constrói o motor via `_build_matter(engine)` (`RVMMatter` para `"rvm"`, senão
-   `LiveMatter`) e, **para cada frame em ordem**, chama
-   `matter.compor(frame, bg, color_match, feather)` → grava o PNG resultante.
+3. Constrói o motor via `_build_matter(engine, dr=_dr_qualidade(w,h))` quando
+   `engine=="rvm"` (`RVMMatter` com ratio de qualidade; senão `LiveMatter`) e,
+   **para cada frame em ordem**, chama `matter.compor(frame, bg, color_match,
+   feather)` → grava o PNG resultante. O `compor` do RVM usa o foreground
+   descontaminado `fgr` ([[concepts/rvm-matting]]).
 4. `matter.close()` ao final; imprime `processados`/`tempo_s`/`fps`.
 
 > **Coerência temporal — vantagem do offline.** O RVM é um matter de **vídeo** com
@@ -53,8 +65,9 @@ tudo)** do **modo vídeo** do [[components/camera-app]].
 
 1. Abre o vídeo com **`cv2.VideoCapture`** e lê `fps`/`w`/`h`/`total` (`fps` cai pra
    `24.0` se o container não reporta).
-2. Constrói o matter via `_build_matter(engine)`. Pré-resolve o fundo conforme
-   `bg_mode`: `video` → `VideoFundo(bg_video_path, w, h)` em loop; `image` → lê a
+2. Constrói o matter via `_build_matter(engine, dr=_dr_qualidade(w,h))` quando
+   `engine=="rvm"` (ratio de qualidade mirando ~720px — [[concepts/rvm-matting]]).
+   Pré-resolve o fundo conforme `bg_mode`: `video` → `VideoFundo(bg_video_path, w, h)` em loop; `image` → lê a
    **imagem original** do `bg_image_path` com `cv2.imread` e faz `cobrir(raw, w, h)`
    no tamanho **do vídeo**; senão (`blur`) → `fundo_desfocado(frame, blur|1)` por
    frame; `none` → passa o frame cru (sem matting).

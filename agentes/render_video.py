@@ -23,12 +23,22 @@ from agentes.matting_live import cobrir, VideoFundo, fundo_desfocado
 _VIDEO_EXT = (".mp4", ".mov", ".avi", ".mkv", ".webm")
 
 
-def _build_matter(engine: str):
+def _build_matter(engine: str, dr: float = None):
     if engine == "rvm":
         from agentes.matting_rvm import RVMMatter
-        return RVMMatter()
+        return RVMMatter(downsample_ratio=dr) if dr else RVMMatter()
     from agentes.matting_live import LiveMatter
     return LiveMatter()
+
+
+def _dr_qualidade(w: int, h: int) -> float:
+    """
+    downsample_ratio do RVM mirando a rede coarse em ~720px no maior lado — mais
+    detalhe de cabelo que o default 0.4 (que mira ~512 pra tempo real). Como o
+    render é offline (sem pressa), vale o custo extra. Limitado a [0.35, 0.7].
+    """
+    longo = max(w, h)
+    return max(0.35, min(0.7, 720.0 / longo))
 
 
 def render_matting(
@@ -62,7 +72,7 @@ def render_matting(
     else:
         bg = cobrir(cv2.imread(background_path), w, h)
 
-    matter = _build_matter(engine)
+    matter = _build_matter(engine, dr=_dr_qualidade(w, h) if engine == "rvm" else None)
     start = time.time()
     feito = 0
     for i, fn in enumerate(frames):
@@ -112,7 +122,7 @@ def render_arquivo(
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
 
-    matter = _build_matter(engine)
+    matter = _build_matter(engine, dr=_dr_qualidade(w, h) if engine == "rvm" else None)
     bgv = VideoFundo(bg_video_path, w, h) if (bg_mode == "video" and bg_video_path) else None
     bgimg = None
     if bg_mode == "image" and bg_image_path and os.path.exists(bg_image_path):
