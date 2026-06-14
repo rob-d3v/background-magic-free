@@ -167,9 +167,10 @@ Status bar no modo vídeo: `MODO VÍDEO — <arquivo>   frame X/Y`.
 
 ### Renderizar tudo (`_aplicar_render`)
 Botão **✅ Aplicar (renderizar tudo)** — renderiza `self.video_path` **inteiro**:
-1. **Snapshot das configs atuais** — `engine`, `bg_mode`, `bg_image_path` (só se
-   `image`), `bg_video_path` (só se `video`), `blur`, `refine` — capturado **antes**
-   de disparar a thread.
+1. **Snapshot das configs atuais** — `bg_mode`, `bg_image_path` (só se `image`),
+   `bg_video_path` (só se `video`), `blur`, `refine` — capturado **antes** de
+   disparar a thread. **O motor do render é SEMPRE `rvm`** (forçado, melhor
+   qualidade), independente do motor escolhido pro live/preview ([[concepts/rvm-matting]]).
 2. `self._rendering = True` (solta a webcam/preview durante o render) e o botão
    vira "🎬 Renderizando..." `disabled`.
 3. Roda `render_arquivo(...)` ([[components/render-video]]) numa **thread daemon

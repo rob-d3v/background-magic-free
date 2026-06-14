@@ -431,3 +431,11 @@ Fatos verificados (contra o código):
 - **Motivação:** o modal não deixava trocar o frame nem ver os ajustes aplicados, e
   a câmera continuava filmando atrás; agora tudo é na tela principal, câmera parada.
 Nenhum arquivo fora de `wiki/` foi modificado.
+
+## [2026-06-13] fact | Render final sempre em RVM
+
+A pedido do usuário, `_aplicar_render` agora **força `engine="rvm"`** no render do
+vídeo, independente do motor selecionado pro live/preview (o RVM dá a melhor borda —
+ver [[concepts/rvm-matting]]). O motor do live/preview continua selecionável
+(MediaPipe pra scrub rápido); só o render final é fixo em RVM. Atualizada
+[[components/camera-app]] (`_aplicar_render` não faz mais snapshot de `engine`).

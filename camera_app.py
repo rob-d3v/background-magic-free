@@ -286,7 +286,8 @@ class CameraApp:
                    command=self._voltar_camera).pack(fill="x")
         ttk.Label(f, style="Muted.TLabel", wraplength=300,
                   text="Carrega um vídeo no lugar da câmera. Ajuste fundo/efeitos vendo aplicado no "
-                       "frame escolhido; Aplicar renderiza o vídeo todo (com áudio) na galeria."
+                       "frame escolhido; Aplicar renderiza o vídeo todo (com áudio) na galeria. "
+                       "O render final usa SEMPRE o motor RVM (alta qualidade)."
                   ).pack(anchor="w", pady=(6, 0))
 
         self.status = ttk.Label(self.root, text="Iniciando...", style="Status.TLabel",
@@ -550,7 +551,7 @@ class CameraApp:
         src = self.video_path
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = os.path.join(self.galeria, f"render_{ts}.mp4")
-        engine, bg_mode = self.engine, self.bg_mode
+        engine, bg_mode = "rvm", self.bg_mode    # render final SEMPRE no RVM (melhor qualidade)
         bg_ip = self.bg_image_path if bg_mode == "image" else None
         bg_vp = self.bg_video_path if bg_mode == "video" else None
         blur, refine = self.blur, self.refine
