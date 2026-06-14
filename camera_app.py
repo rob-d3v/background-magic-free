@@ -101,6 +101,18 @@ class CameraApp:
         self._paused = False
         self._rendering = False      # durante render offline: solta a webcam
         self.engine = c.get("engine", "mediapipe")
+
+        # ── modo VÍDEO (edita um arquivo no lugar da câmera) ──
+        self.source = "camera"       # camera | video
+        self.video_path = None
+        self._vcap = None
+        self._video_total = 0
+        self._video_pos = 0
+        self._video_cur = -1
+        self._video_raw = None       # frame cru no pos atual
+        self._video_base = None      # composto (matte+fundo), antes dos ajustes
+        self._dirty_base = False     # precisa refazer o recorte
+        self._dirty_adj = False      # precisa só reaplicar brilho/zoom/etc
         self.matter = None       # criado no worker → janela abre instantânea
 
         self._build_ui()
@@ -221,11 +233,13 @@ class CameraApp:
         f.pack(fill="x", pady=(0, 8), padx=2)
         self.mirror_var = tk.BooleanVar(value=self.mirror)
         ttk.Checkbutton(f, text="Espelhar (selfie)", variable=self.mirror_var,
-                        command=lambda: (setattr(self, "mirror", self.mirror_var.get()), self._save_config())
+                        command=lambda: (setattr(self, "mirror", self.mirror_var.get()),
+                                         setattr(self, "_dirty_base", True), self._save_config())
                         ).pack(anchor="w")
         self.refine_var = tk.BooleanVar(value=self.refine)
         ttk.Checkbutton(f, text="Borda alta qualidade", variable=self.refine_var,
-                        command=lambda: (setattr(self, "refine", self.refine_var.get()), self._save_config())
+                        command=lambda: (setattr(self, "refine", self.refine_var.get()),
+                                         setattr(self, "_dirty_base", True), self._save_config())
                         ).pack(anchor="w", pady=(0, 6))
         self.s_zoom = self._slider(f, "Zoom", 1.0, 4.0, self.zoom, self._set("zoom"), res=0.05)
         self.s_px = self._slider(f, "Enquadrar X", -1.0, 1.0, self.pan_x, self._set("pan_x"), res=0.05)
@@ -246,12 +260,34 @@ class CameraApp:
         self.btn_vcam = ttk.Button(f, text="🔴  Iniciar câmera virtual (stream)",
                                    style="Accent.TButton", command=self._toggle_vcam)
         self.btn_vcam.pack(fill="x", pady=(0, 4))
-        row2 = ttk.Frame(f); row2.pack(fill="x")
-        ttk.Button(row2, text="🖼  Galeria", command=self._open_galeria).pack(side="left", fill="x", expand=True, padx=(0, 3))
-        self.btn_render = ttk.Button(row2, text="🎬  Renderizar vídeo...", command=self._render_video)
-        self.btn_render.pack(side="left", fill="x", expand=True, padx=(3, 0))
-        ttk.Label(f, text="Renderizar: aplica o fundo/efeitos atuais a um vídeo e salva na galeria.",
-                  style="Muted.TLabel", wraplength=300).pack(anchor="w", pady=(8, 0))
+        ttk.Button(f, text="🖼  Galeria", command=self._open_galeria).pack(fill="x")
+
+        # ── VÍDEO (editar & renderizar) — substitui a câmera na tela ──
+        f = ttk.Labelframe(ctl, text="  VÍDEO (EDITAR & RENDERIZAR)  ", padding=10)
+        f.pack(fill="x", pady=(0, 8), padx=2)
+        self.btn_carregar = ttk.Button(f, text="🎬  Carregar vídeo (editar)...",
+                                       command=self._carregar_video)
+        self.btn_carregar.pack(fill="x")
+        # barra que só aparece quando um vídeo está carregado
+        self.video_bar = ttk.Frame(f)
+        fr = ttk.Frame(self.video_bar); fr.pack(fill="x", pady=(6, 2))
+        ttk.Label(fr, text="Frame", width=6, anchor="w").pack(side="left")
+        self.frame_slider = tk.Scale(fr, from_=0, to=1, orient="horizontal", resolution=1,
+                                     command=self._video_scrub, showvalue=True, length=140,
+                                     sliderlength=18, bg=C["panel"], fg=C["txt"],
+                                     troughcolor=C["card"], highlightthickness=0, bd=0,
+                                     sliderrelief="flat", activebackground=C["accent"],
+                                     font=("Segoe UI", 7))
+        self.frame_slider.pack(side="right", fill="x", expand=True)
+        self.btn_aplicar = ttk.Button(self.video_bar, text="✅  Aplicar (renderizar tudo)",
+                                      style="Accent.TButton", command=self._aplicar_render)
+        self.btn_aplicar.pack(fill="x", pady=(2, 3))
+        ttk.Button(self.video_bar, text="📷  Voltar à câmera",
+                   command=self._voltar_camera).pack(fill="x")
+        ttk.Label(f, style="Muted.TLabel", wraplength=300,
+                  text="Carrega um vídeo no lugar da câmera. Ajuste fundo/efeitos vendo aplicado no "
+                       "frame escolhido; Aplicar renderiza o vídeo todo (com áudio) na galeria."
+                  ).pack(anchor="w", pady=(6, 0))
 
         self.status = ttk.Label(self.root, text="Iniciando...", style="Status.TLabel",
                                 anchor="w", padding=(10, 5))
@@ -273,7 +309,10 @@ class CameraApp:
         return s
 
     def _set(self, attr):
-        return lambda v: setattr(self, attr, float(v))
+        def f(v):
+            setattr(self, attr, float(v))
+            self._dirty_adj = True       # atualiza o preview do vídeo ao vivo
+        return f
 
     # ─────────────────────── cache de preferências ───────────────────────
     def _load_config(self) -> dict:
@@ -346,14 +385,17 @@ class CameraApp:
         except Exception:
             pass
         self._paused = False
+        self._dirty_base = True
         self._save_config()
 
     def _on_bg(self):
         self.bg_mode = self.bg_var.get()
+        self._dirty_base = True
         self._save_config()
 
     def _set_blur(self, v):
         self.blur = int(float(v)) | 1
+        self._dirty_base = True
 
     def _pick_bg(self):
         p = filedialog.askopenfilename(
@@ -369,6 +411,7 @@ class CameraApp:
         self.bg_image_path = p
         self.bg_var.set("image")
         self.bg_mode = "image"
+        self._dirty_base = True
         self._save_config()
 
     def _pick_bg_video(self):
@@ -389,12 +432,14 @@ class CameraApp:
             antigo.close()
         self.bg_var.set("video")
         self.bg_mode = "video"
+        self._dirty_base = True
         self._save_config()
 
     def _reset(self):
         for s, v in [(self.s_zoom, 1.0), (self.s_px, 0.0), (self.s_py, 0.0),
                      (self.s_bri, 0), (self.s_con, 1.0), (self.s_sat, 1.0), (self.s_nit, 0.0)]:
             s.set(v)
+        self._dirty_adj = True
         self._save_config()
 
     def _toggle_rec(self):
@@ -441,96 +486,80 @@ class CameraApp:
                 return cobrir(raw, w, h)
         return fundo_desfocado(frame, int(self.blur) | 1)
 
-    def _compose_one(self, frame):
-        """Aplica fundo + ajustes atuais a UM frame (pra preview do render)."""
+    def _compose_base(self, frame):
+        """Recorta a pessoa e compõe no fundo (SEM ajustes) — base do preview/render."""
         if self.matter is None:
             self.matter = LiveMatter()
         if hasattr(self.matter, "reset"):
             self.matter.reset()
         if self.bg_mode == "none":
-            out = frame
-        else:
-            bg = self._bg_for_frame(frame)
-            out = self.matter.compor(frame, bg, color_match=0.12, refine=self.refine)
-        return aplicar_ajustes(
-            out, zoom=self.zoom, pan_x=self.pan_x, pan_y=self.pan_y,
-            brilho=int(self.brilho), contraste=self.contraste,
-            saturacao=self.saturacao, nitidez=self.nitidez)
+            return frame.copy()
+        bg = self._bg_for_frame(frame)
+        return self.matter.compor(frame, bg, color_match=0.12, refine=self.refine)
 
-    @staticmethod
-    def _fit(img, maxw, maxh):
-        h, w = img.shape[:2]
-        s = min(maxw / w, maxh / h, 1.0)
-        if s < 1.0:
-            img = cv2.resize(img, (int(w * s), int(h * s)), interpolation=cv2.INTER_AREA)
-        return img
-
-    def _render_video(self):
-        """Escolhe um vídeo, mostra preview de 1 frame pra configurar, depois renderiza."""
+    def _carregar_video(self):
+        """Carrega um vídeo PRA EDITAR no lugar da câmera (modo vídeo, na tela principal)."""
         p = filedialog.askopenfilename(
-            title="Vídeo pra renderizar",
+            title="Vídeo pra editar/renderizar",
             filetypes=[("Vídeos", "*.mp4 *.mov *.avi *.mkv *.webm"), ("Todos", "*.*")])
         if not p:
             return
         cap = cv2.VideoCapture(p)
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 2))   # frame do meio
-        ok, frame0 = cap.read()
-        if not ok:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ok, frame0 = cap.read()
         cap.release()
-        if not ok:
-            messagebox.showerror("Erro", "Não consegui ler um frame desse vídeo.")
+        if total <= 0:
+            messagebox.showerror("Erro", "Não consegui ler esse vídeo.")
             return
-        self._abrir_preview_render(p, frame0)
+        if self._vcap is not None:
+            self._vcap.release()
+            self._vcap = None
+        self.video_path = p
+        self._video_total = total
+        self._video_cur = -1
+        self._video_raw = None
+        self._video_base = None
+        self._video_pos = total // 2
+        self.source = "video"          # worker solta a webcam e passa a usar o vídeo
+        self._dirty_base = True
+        self.frame_slider.config(to=max(0, total - 1))
+        self.frame_slider.set(self._video_pos)
+        self.video_bar.pack(fill="x", pady=(8, 0))
+        self.btn_carregar.config(text="🔁  Trocar vídeo...")
+        self.status.config(text=f"MODO VÍDEO — {os.path.basename(p)} ({total} frames)")
 
-    def _abrir_preview_render(self, src, frame0):
-        C = self.COL
-        win = tk.Toplevel(self.root)
-        win.title("Pré-visualizar render — ajuste e confirme")
-        win.configure(bg=C["bg"])
-        win.transient(self.root)
-        lbl = tk.Label(win, bg=C["bg"], bd=0)
-        lbl.pack(padx=12, pady=12)
-        ttk.Label(win, style="Muted.TLabel", wraplength=720,
-                  text="Esse é um frame do vídeo com o fundo/ajustes atuais. Mexa nos controles da "
-                       "janela principal e clique 'Atualizar' até ficar a teu gosto. Depois "
-                       "'Renderizar vídeo todo'.").pack(padx=12, pady=(0, 8))
-        bar = ttk.Frame(win)
-        bar.pack(fill="x", padx=12, pady=(0, 12))
+    def _video_scrub(self, v):
+        """Slider de frame: escolhe qual frame do vídeo previsualizar."""
+        self._video_pos = int(float(v))
 
-        def atualizar():
-            out = self._compose_one(frame0.copy())
-            disp = self._fit(out, 760, 460)
-            rgb = cv2.cvtColor(disp, cv2.COLOR_BGR2RGB)
-            im = ImageTk.PhotoImage(Image.fromarray(rgb))
-            lbl.configure(image=im)
-            lbl.image = im
+    def _voltar_camera(self):
+        """Tira o vídeo e volta pra webcam ao vivo."""
+        self.source = "camera"
+        if self._vcap is not None:
+            self._vcap.release()
+            self._vcap = None
+        self.video_path = None
+        self.cur_cam = None            # força o worker a reabrir a webcam
+        self.video_bar.pack_forget()
+        self.btn_carregar.config(text="🎬  Carregar vídeo (editar)...")
+        self.status.config(text="Modo câmera.")
 
-        def renderizar():
-            win.destroy()
-            self._executar_render(src)
-
-        ttk.Button(bar, text="↻  Atualizar preview", command=atualizar).pack(side="left")
-        ttk.Button(bar, text="🎬  Renderizar vídeo todo", style="Accent.TButton",
-                   command=renderizar).pack(side="right")
-        ttk.Button(bar, text="Cancelar", command=win.destroy).pack(side="right", padx=8)
-        atualizar()
-
-    def _executar_render(self, src):
+    def _aplicar_render(self):
+        """Renderiza o vídeo carregado inteiro com as configs atuais, salva na galeria."""
+        if not self.video_path:
+            return
+        src = self.video_path
         ts = time.strftime("%Y%m%d_%H%M%S")
         out = os.path.join(self.galeria, f"render_{ts}.mp4")
         engine, bg_mode = self.engine, self.bg_mode
         bg_ip = self.bg_image_path if bg_mode == "image" else None
         bg_vp = self.bg_video_path if bg_mode == "video" else None
         blur, refine = self.blur, self.refine
-        self.btn_render.config(state="disabled", text="🎬 Renderizando...")
-        self._rendering = True       # solta a webcam durante o render (libera CPU)
+        self.btn_aplicar.config(state="disabled", text="🎬 Renderizando...")
+        self._rendering = True       # solta a webcam/vídeo-preview durante o render (libera CPU)
 
         def fim(msg_ok=None, err=None):
             self._rendering = False
-            self.btn_render.config(state="normal", text="🎬  Renderizar vídeo...")
+            self.btn_aplicar.config(state="normal", text="✅  Aplicar (renderizar tudo)")
             if err:
                 messagebox.showerror("Erro no render", err)
             else:
@@ -587,6 +616,38 @@ class CameraApp:
                     self._frame = None
                 time.sleep(0.1)
                 continue
+
+            if self.source == "video":     # MODO VÍDEO: webcam parada, edita o arquivo
+                if cap is not None:        # solta a webcam (não te filma)
+                    cap.release()
+                    cap = None
+                    self.cur_cam = None
+                if self.video_path and self._vcap is None:
+                    self._vcap = cv2.VideoCapture(self.video_path)
+                if self._vcap is None:
+                    time.sleep(0.05)
+                    continue
+                if self._video_pos != self._video_cur:     # usuário trocou o frame
+                    self._vcap.set(cv2.CAP_PROP_POS_FRAMES, self._video_pos)
+                    ok, fr = self._vcap.read()
+                    if ok:
+                        self._video_raw = fr
+                    self._video_cur = self._video_pos
+                    self._dirty_base = True
+                if self._video_raw is not None and (self._dirty_base or self._dirty_adj):
+                    if self._dirty_base or self._video_base is None:
+                        self._video_base = self._compose_base(self._video_raw)
+                        self._dirty_base = False
+                    out = aplicar_ajustes(
+                        self._video_base, zoom=self.zoom, pan_x=self.pan_x, pan_y=self.pan_y,
+                        brilho=int(self.brilho), contraste=self.contraste,
+                        saturacao=self.saturacao, nitidez=self.nitidez)
+                    self._dirty_adj = False
+                    with self._lock:
+                        self._frame = out
+                time.sleep(0.03)
+                continue
+
             if self.req_cam != self.cur_cam:
                 if cap:
                     cap.release()
@@ -680,9 +741,15 @@ class CameraApp:
             img = ImageTk.PhotoImage(pil)
             self.video.configure(image=img)
             self.video.image = img
-            rec = "   ● REC" if self.recording else ""
-            vc = "   🔴 stream ativo" if self.virtualcam is not None else ""
-            self.status.config(text=f"  {self._fps:4.1f} fps    captura {CAP_W}x{CAP_H}{rec}{vc}")
+            if self.source == "video":
+                nome = os.path.basename(self.video_path) if self.video_path else ""
+                self.status.config(
+                    text=f"  MODO VÍDEO — {nome}   frame {self._video_pos}/{max(0, self._video_total - 1)}"
+                         "   (ajuste e clique Aplicar)")
+            else:
+                rec = "   ● REC" if self.recording else ""
+                vc = "   🔴 stream ativo" if self.virtualcam is not None else ""
+                self.status.config(text=f"  {self._fps:4.1f} fps    captura {CAP_W}x{CAP_H}{rec}{vc}")
         self.root.after(33, self._tick)
 
     def fechar(self):
@@ -695,6 +762,8 @@ class CameraApp:
             self.virtualcam.close()
         if self.bg_video:
             self.bg_video.close()
+        if self._vcap is not None:
+            self._vcap.release()
         try:
             self.matter.close()
         except Exception:

@@ -392,3 +392,42 @@ Fatos verificados (contra o código):
   `tk.Scale` estilizado com a paleta.
 - Verificado: import OK; o app constrói a UI e roda sem erro Tk. Nenhum arquivo fora
   de `wiki/` foi modificado.
+
+## [2026-06-13] fact | Render de vídeo virou MODO VÍDEO embutido (sem modal)
+
+O render de vídeo do `camera_app.py` deixou de usar um **modal/Toplevel** e virou
+um **MODO VÍDEO embutido na tela principal**. Reescrita a seção de render em
+[[components/camera-app]] ("Modo vídeo (editar e renderizar arquivo na tela
+principal)", substituindo a antiga "Renderizar vídeo (`_render_video`)" / preview em
+Toplevel) e atualizados os gotchas 7/8; ajustados os linkbacks em
+[[components/render-video]] (botão e seção de integração).
+
+Fatos verificados (contra o código):
+- Novo estado **`self.source`** = `"camera"` | `"video"`. No modo vídeo o arquivo
+  carregado **substitui a câmera** na área de preview e a **webcam é solta** — o
+  worker `_loop`, com `source=="video"`, faz `cap.release()` (`cap=None`,
+  `cur_cam=None`) e passa a ler o `self._vcap` do arquivo; não filma mais.
+- **`_carregar_video()`** (botão "🎬 Carregar vídeo (editar)..."): file dialog → lê
+  `total` de frames (aborta se `<=0`), seta `source="video"`, `_video_pos=total//2`,
+  `_dirty_base=True`; mostra a **barra de vídeo** (`video_bar`, antes `pack_forget`),
+  configura o `frame_slider` (range `0..total-1`) e o botão vira "🔁 Trocar vídeo...".
+- **Barra de vídeo** (só no modo vídeo): slider de frame (`_video_scrub` →
+  `self._video_pos`), botão "✅ Aplicar (renderizar tudo)" (`_aplicar_render`,
+  `Accent.TButton`) e "📷 Voltar à câmera" (`_voltar_camera`: volta `source="camera"`,
+  solta `_vcap`, `cur_cam=None` p/ reabrir a webcam, esconde a barra).
+- **Preview ao vivo no worker** via dois flags: **`_dirty_base`** (refazer o
+  recorte — frame/fundo/motor/blur/refine/mirror/pick bg) e **`_dirty_adj`** (só
+  reaplicar ajustes). `_compose_base(frame)` faz matte+fundo SEM ajustes (cacheado em
+  `_video_base`, reseta o RVM; `bg_mode=="none"` → frame cru); `aplicar_ajustes` por
+  cima a cada `_dirty_adj`. Seek (`CAP_PROP_POS_FRAMES`) + `read` quando `_video_pos`
+  muda. Assim todo controle atualiza o preview do frame ao vivo sem recortar à toa.
+  Callbacks: ajustes (`_set`)/`_reset` → `_dirty_adj`; fundo/motor/blur/refine/mirror/
+  pick bg → `_dirty_base`. Status bar: "MODO VÍDEO — <arquivo>  frame X/Y".
+- **`_aplicar_render()`**: snapshot das configs, `_rendering=True` (solta a webcam),
+  roda `render_arquivo(self.video_path, ...)` em thread daemon, salva em
+  `galeria/render_<ts>.mp4`, `messagebox` no `fim()`.
+- **Removidos:** `_abrir_preview_render` (Toplevel), `_render_video`,
+  `_executar_render`, `_compose_one`, `_fit` — não há mais modal.
+- **Motivação:** o modal não deixava trocar o frame nem ver os ajustes aplicados, e
+  a câmera continuava filmando atrás; agora tudo é na tela principal, câmera parada.
+Nenhum arquivo fora de `wiki/` foi modificado.

@@ -74,8 +74,10 @@ Pipeline por frame no worker:
 - **Ações:** **● Gravar** (toggle `VideoWriter`), **📷 Foto** (`req_photo`),
   **🔴 Iniciar câmera virtual (stream)** ↔ **■ PARAR stream (câmera virtual)**
   (toggle `req_virtual` — rótulo explícito; antes era "Câmera virtual"/"Parar
-  virtual", pouco óbvio), **📁 Galeria** (`os.startfile`) e **🎬 Renderizar
-  vídeo...** (`_render_video`, ver [Renderizar vídeo](#renderizar-v%C3%ADdeo-render_video)).
+  virtual", pouco óbvio) e **🖼 Galeria** (`os.startfile`).
+- **VÍDEO (editar & renderizar)** — seção própria com o botão **🎬 Carregar vídeo
+  (editar)...** que ativa o **MODO VÍDEO embutido na tela principal** (ver
+  [Modo vídeo](#modo-v%C3%ADdeo-editar-e-renderizar-arquivo-na-tela-principal)).
 - **Status bar:** fps medido + resolução + indicadores REC / virtual; também
   mostra o progresso do render.
 
@@ -89,59 +91,110 @@ Pipeline por frame no worker:
     **`<workspace>/galeria/`** (`Paths().base + "/galeria"`).
   - **Câmera virtual** opcional: `pyvirtualcam.Camera(..., fmt=PixelFormat.BGR)` →
     **OBS Virtual Camera** (a mesma do `live.py`).
-  - **Render de arquivo** (botão 🎬): `render_<timestamp>.mp4` na mesma galeria —
+  - **Render de arquivo** (MODO VÍDEO): `render_<timestamp>.mp4` na mesma galeria —
     aplica o fundo/efeitos atuais a um vídeo escolhido (ver abaixo).
 
-## Renderizar vídeo (`_render_video`)
-Botão **🎬 Renderizar vídeo...** — aplica o **fundo e o motor atuais** a um
-**arquivo de vídeo** inteiro (não só ao stream da webcam) e salva o resultado na
-galeria. **Não renderiza direto:** primeiro mostra um **preview de 1 frame** pra o
-usuário conferir/ajustar o fundo e os efeitos, e só então renderiza o vídeo todo.
+## Modo vídeo (editar e renderizar arquivo na tela principal)
+Aplica o **fundo, o motor e os ajustes atuais** a um **arquivo de vídeo** inteiro
+(não só ao stream da webcam) e salva o resultado na galeria. **Não é mais um
+modal/Toplevel:** virou um **MODO VÍDEO embutido na tela principal** — o vídeo
+carregado **substitui a câmera** na área de preview e a **webcam é solta**, então
+dá pra **trocar o frame** e **ver os ajustes ao vivo** antes de renderizar tudo.
 
-### Preview de 1 frame antes de renderizar
-`_render_video` não dispara o render — ele abre o vídeo, busca o **frame do meio**
-(`CAP_PROP_POS_FRAMES = total // 2`; fallback pro frame 0 se a leitura falhar) e
-abre um `tk.Toplevel` de **pré-visualização** (`_abrir_preview_render(src, frame0)`)
-mostrando esse frame **já com o fundo + ajustes atuais aplicados**. O usuário mexe
-nos controles da janela principal e reavalia o preview. Botões:
-- **"↻ Atualizar preview"** — recompõe o `frame0` com as configs **atuais** da
-  janela (lê `self.bg_mode`/`bg_image_path`/`blur`/`refine`/`zoom`/`brilho`/etc. no
-  momento do clique). O `PhotoImage` é criado aqui, na main thread.
-- **"🎬 Renderizar vídeo todo"** (`Accent.TButton`) — fecha o preview e chama
-  `_executar_render(src)` (o render real).
-- **"Cancelar"** — só fecha a janela.
+> Substitui o antigo preview em `tk.Toplevel`/modal (`_abrir_preview_render`).
+> **Removidos:** `_abrir_preview_render`, `_render_video`, `_executar_render`,
+> `_compose_one`, `_fit` — não existe mais janela de preview separada.
+> **Motivação:** o modal não deixava trocar o frame nem ver os ajustes aplicados,
+> e a câmera continuava filmando atrás. Agora tudo é na tela principal, com a
+> câmera parada.
 
-**Helpers novos** (todos operam em BGR e não dependem do worker do live):
-- `_bg_for_frame(frame)` — resolve o **fundo BGR no tamanho do frame** conforme o
-  modo atual: `video` → 1º frame do vídeo de fundo (`cobrir`); `image` → `cv2.imread`
-  do `bg_image_path` (`cobrir`); senão → `fundo_desfocado(frame, blur|1)`.
-- `_compose_one(frame)` — fundo (`_bg_for_frame`) + `matter.compor(... refine=...)`
-  + `aplicar_ajustes(...)`. **Reseta o estado do RVM** antes (`matter.reset()` se
-  existir) — é um preview de 1 frame isolado ([[concepts/rvm-matting]]). Com
-  `bg_mode=="none"` passa o frame cru (só ajustes).
-- `_fit(img, maxw, maxh)` (staticmethod) — escala a imagem pra caber em
-  `maxw×maxh` (760×460 no preview) mantendo proporção; nunca amplia (`s ≤ 1.0`).
+### Estado `self.source` (`"camera"` | `"video"`)
+Novo estado que decide o que alimenta o preview principal:
+- **`"camera"`** (default) — webcam ao vivo, comportamento de sempre.
+- **`"video"`** — o arquivo carregado substitui a câmera; o worker (`_loop`)
+  **solta a webcam** (`cap.release()`, `cap=None`, `cur_cam=None`) e passa a ler
+  frames do `self._vcap` (o `cv2.VideoCapture` do arquivo). A webcam **não filma
+  mais** enquanto `source=="video"`.
 
-### Render real (`_executar_render`)
-Depois de confirmado no preview:
+### Entrar no modo vídeo (`_carregar_video`)
+Botão **🎬 Carregar vídeo (editar)...** (`self.btn_carregar`):
+1. `filedialog` (mp4/mov/avi/mkv/webm) → lê `total = CAP_PROP_FRAME_COUNT`; aborta
+   com `messagebox` se `total<=0`.
+2. Seta `self.video_path`, `self._video_total=total`, **`self._video_pos = total//2`**
+   (começa no meio), `self.source="video"` e `self._dirty_base=True`.
+3. Mostra a **barra de vídeo** (`self.video_bar`, antes escondida via `pack_forget`),
+   configura o **slider de frame** (`self.frame_slider`, range `0..total-1`) no
+   `_video_pos`, e o botão vira **🔁 Trocar vídeo...**.
+4. Status bar: `MODO VÍDEO — <arquivo> (<total> frames)`.
+
+### Barra de vídeo (só visível no modo vídeo)
+- **Slider de frame** (`frame_slider` → `_video_scrub` → `self._video_pos`) — escolhe
+  qual frame previsualizar; o worker faz `seek` + `read` quando o pos muda.
+- **✅ Aplicar (renderizar tudo)** (`btn_aplicar`, `Accent.TButton` → `_aplicar_render`)
+  — renderiza o vídeo inteiro (ver abaixo).
+- **📷 Voltar à câmera** (`_voltar_camera`) — volta `source="camera"`, solta o
+  `_vcap`, força a webcam a reabrir (`cur_cam=None`), esconde a barra
+  (`pack_forget`) e o botão volta a **🎬 Carregar vídeo (editar)...**.
+
+### Preview ao vivo no worker (frame escolhido, ajustes ao vivo)
+Com `source=="video"`, o `_loop` recompõe o frame selecionado **só quando há
+mudança**, via dois flags:
+- **`_dirty_base`** — refazer o **recorte** (matte + fundo): muda quando muda o
+  frame, o fundo, o motor, blur/refine/mirror ou o pick de fundo.
+- **`_dirty_adj`** — só **reaplicar os ajustes** (brilho/contraste/zoom/etc.) por
+  cima da base já recortada.
+
+Fluxo por iteração:
+1. Se `_video_pos != _video_cur` → `seek` (`CAP_PROP_POS_FRAMES`) + `read` no
+   `_vcap`, guarda em `self._video_raw`, marca `_dirty_base`.
+2. Se há frame e `_dirty_base or _dirty_adj`:
+   - se `_dirty_base` (ou `_video_base is None`): `self._video_base =
+     _compose_base(self._video_raw)` e limpa `_dirty_base`;
+   - `aplicar_ajustes(self._video_base, ...)` por cima → frame de saída; limpa
+     `_dirty_adj`.
+- **`_compose_base(frame)`** faz **matte + fundo SEM ajustes** (cacheado em
+  `self._video_base`): reseta o RVM (`matter.reset()` se existir), e com
+  `bg_mode=="none"` devolve o frame cru (`.copy()`); senão `_bg_for_frame` +
+  `matter.compor(..., color_match=0.12, refine=...)`.
+- Assim **todo controle** (fundo, motor, sliders) atualiza o preview do frame ao
+  vivo, **sem recortar à toa** — só reaplica ajustes quando dá (custo barato).
+
+Os callbacks marcam o flag certo: ajustes (`_set`) → `_dirty_adj`; fundo/motor/
+blur/refine/mirror/pick bg → `_dirty_base`; `_reset` → `_dirty_adj`. (No modo
+câmera os flags são ignorados — o worker recompõe cada frame da webcam.)
+
+Status bar no modo vídeo: `MODO VÍDEO — <arquivo>   frame X/Y`.
+
+### Renderizar tudo (`_aplicar_render`)
+Botão **✅ Aplicar (renderizar tudo)** — renderiza `self.video_path` **inteiro**:
 1. **Snapshot das configs atuais** — `engine`, `bg_mode`, `bg_image_path` (só se
    `image`), `bg_video_path` (só se `video`), `blur`, `refine` — capturado **antes**
-   de disparar a thread, pra o worker do live não correr com os valores.
-2. `self._rendering = True` e o botão vira "🎬 Renderizando..." `disabled`.
+   de disparar a thread.
+2. `self._rendering = True` (solta a webcam/preview durante o render) e o botão
+   vira "🎬 Renderizando..." `disabled`.
 3. Roda `render_arquivo(...)` ([[components/render-video]]) numa **thread daemon
    separada** (não congela a UI); progresso na status bar (via `progress_cb` →
    `root.after(0, ...)`, só a main thread mexe em widgets).
 4. No callback `fim()`: `self._rendering = False`, reabilita o botão e mostra
    `messagebox` (sucesso ou erro). Saída em `<workspace>/galeria/render_<timestamp>.mp4`.
 
-### Solta a webcam durante o render
-O matting RVM é pesado; rodá-lo enquanto a webcam continua capturando faz os dois
-competirem por CPU. Por isso há a flag **`self._rendering`**: enquanto `True`, o
-worker (`_loop`) **libera a câmera** (`cap.release()`, `cap = None`, frame `None`) e
-fica **ocioso** — a webcam/CPU ficam livres pro render. `_executar_render` seta
-`_rendering=True` antes de disparar e `_rendering=False` no `fim()`; o worker
-**reabre a câmera sozinho** quando `_rendering` volta a `False`. Ver
-[Gotcha 8](#gotchas).
+### Solta a webcam (no modo vídeo e no render)
+A webcam é liberada em **duas situações**, ambas no `_loop`:
+- **`source=="video"`** — o worker solta o `cap` da webcam e passa a ler o
+  `_vcap` do arquivo (a webcam não filma enquanto edita o vídeo).
+- **`self._rendering`** (durante o render real) — o matting RVM é pesado; rodá-lo
+  enquanto a webcam captura faz os dois competirem por CPU. Enquanto `True`, o
+  worker **libera a câmera** (`cap.release()`, `cap=None`, frame `None`) e fica
+  **ocioso** — CPU livre pro render. `_aplicar_render` seta `_rendering=True` antes
+  e `_rendering=False` no `fim()`; o worker reabre a câmera sozinho ao voltar pra
+  `source=="camera"`. Ver [Gotcha 8](#gotchas).
+
+**Helpers de composição** (operam em BGR, não dependem do worker da webcam):
+- `_bg_for_frame(frame)` — fundo BGR no tamanho do frame conforme o modo: `video`
+  → 1º frame do vídeo de fundo (`cobrir`); `image` → `cv2.imread` do `bg_image_path`
+  (`cobrir`); senão → `fundo_desfocado(frame, blur|1)`.
+- `_compose_base(frame)` — matte + fundo **sem** ajustes (ver acima); base cacheada
+  do preview/render.
 
 > O `render_arquivo` **remuxa o áudio original** do vídeo de entrada (o stream live
 > e a gravação `● Gravar` são mudos), de forma robusta (`-map 1:a:0?` — áudio
@@ -269,19 +322,20 @@ saturacao=1, nitidez=0), então o custo é só dos ajustes ativos.
    `rvm_mobilenetv3.pth` (~15MB) via torch.hub; a UI mostra "Carregando motor (RVM
    baixa o modelo na 1a vez)..." e o worker fica `_paused`. Exige **torchvision**
    instalado ([[concepts/rvm-matting]]); se faltar/erro, o app volta pro MediaPipe.
-7. **O render usa um snapshot, não o estado vivo.** `_executar_render` captura as
+7. **O render usa um snapshot, não o estado vivo.** `_aplicar_render` captura as
    configs (engine/fundo/blur/refine) **antes** de disparar a thread, e o
    `render_arquivo` constrói seu **próprio** matter — não compartilha `self.matter`
-   com o worker do live. Mexer nos controles durante o render não afeta o render em
-   curso, e vice-versa. `progress_cb`/`messagebox` precisam de `root.after(0, ...)`
-   (só a main thread mexe em widgets Tk). O **preview** (`_compose_one`), em
-   contraste, **lê o estado vivo** a cada clique de "Atualizar" — é justamente pra o
-   usuário ajustar antes de tirar o snapshot.
-8. **O render solta a webcam.** A flag `self._rendering` faz o worker (`_loop`)
-   liberar o `cap` e ficar ocioso enquanto o render roda — senão a webcam + o RVM do
-   render competem por CPU. O worker reabre a câmera sozinho quando `_rendering`
-   volta a `False` (no `fim()`). Efeito visível: o preview da webcam **congela/apaga**
-   durante o render e volta sozinho ao terminar.
+   com o worker. Mexer nos controles durante o render não afeta o render em curso, e
+   vice-versa. `progress_cb`/`messagebox` precisam de `root.after(0, ...)` (só a main
+   thread mexe em widgets Tk). O **preview ao vivo** do modo vídeo, em contraste,
+   **lê o estado vivo** (recompõe o frame via flags `_dirty_base`/`_dirty_adj`) — é
+   justamente pra o usuário ajustar antes de renderizar.
+8. **No modo vídeo a webcam fica solta.** Tanto com `source=="video"` (edita o
+   arquivo, webcam liberada) quanto com `self._rendering` (render real), o worker
+   (`_loop`) libera o `cap` da webcam — senão a webcam + o RVM do render competem por
+   CPU. O worker reabre a câmera sozinho ao voltar pra `source=="camera"` (botão
+   📷 Voltar à câmera) e quando `_rendering` volta a `False` (no `fim()`). Efeito
+   visível: o preview da webcam **para** enquanto edita/renderiza vídeo.
 
 ## Relacionados
 [[components/live-mode]] · [[concepts/realtime-matting]] · [[concepts/rvm-matting]] ·

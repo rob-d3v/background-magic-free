@@ -48,8 +48,8 @@ color_match=0.12, feather=2, progress_cb=None)`:
 `render_arquivo(input_path, output_path, engine="rvm", bg_mode="blur",
 bg_image_path=None, bg_video_path=None, blur=45, color_match=0.12, refine=True,
 progress_cb=None)`. Renderiza um **arquivo de vídeo inteiro** trocando o fundo,
-**sem extrair frames em disco** — chamado pelo botão **🎬 Renderizar vídeo...** do
-[[components/camera-app]].
+**sem extrair frames em disco** — chamado pelo botão **✅ Aplicar (renderizar
+tudo)** do **modo vídeo** do [[components/camera-app]].
 
 1. Abre o vídeo com **`cv2.VideoCapture`** e lê `fps`/`w`/`h`/`total` (`fps` cai pra
    `24.0` se o container não reporta).
@@ -141,13 +141,14 @@ No modo HD:
   ([[components/exportacao]], com o áudio original). **Pula** o `remover_fundo`.
 
 ## Integração no app de câmera (`camera_app.py`)
-O botão **🎬 Renderizar vídeo...** ([[components/camera-app]]) primeiro mostra um
-**preview de 1 frame** (frame do meio do vídeo, com fundo+ajustes atuais) e, ao
-confirmar, chama `render_arquivo(...)` numa thread, passando um **snapshot** das
-configs atuais do app (engine, bg_mode, **bg_image_path**/bg_video_path, blur,
-refine). Durante o render o app **solta a webcam** (flag `_rendering`) pra não
-disputar CPU com o RVM. É a forma de aplicar o mesmo recorte/fundo do live a um
-vídeo gravado **com áudio**, sem passar pelo Studio.
+No **modo vídeo** do [[components/camera-app]] (estado `source=="video"`), o vídeo
+carregado substitui a câmera na tela principal e o usuário ajusta fundo/motor/
+ajustes vendo o frame escolhido ao vivo; ao clicar **✅ Aplicar (renderizar tudo)**
+(`_aplicar_render`), chama `render_arquivo(...)` numa thread, passando um
+**snapshot** das configs atuais do app (engine, bg_mode, **bg_image_path**/
+bg_video_path, blur, refine). Durante o render o app **solta a webcam** (flag
+`_rendering`) pra não disputar CPU com o RVM. É a forma de aplicar o mesmo recorte/
+fundo do live a um vídeo gravado **com áudio**, sem passar pelo Studio.
 
 ## Relacionados
 [[concepts/rvm-matting]] · [[components/camera-app]] · [[components/live-mode]] ·
