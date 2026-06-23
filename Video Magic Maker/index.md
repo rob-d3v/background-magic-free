@@ -1,10 +1,11 @@
 # Video Magic Maker — brain index
 
-_122 pages · regenerated 2026-06-23._ Read this first; then open the page.
+_123 pages · regenerated 2026-06-23._ Read this first; then open the page.
 
 ## Overview
 
 - [[wiki/overview/background-magic-free|background-magic-free (lumina-bg) — Overview]] — background-magic-free (internal name lumina-bg) is a free, no-green-screen tool that swaps the background of a person video and optionally relights the person t…
+- [[wiki/overview/background-magic-free-quickref|background-magic-free — Quickref (operating contract)]] — Read this first.
 
 ## Entities
 

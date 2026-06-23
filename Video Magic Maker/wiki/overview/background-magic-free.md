@@ -11,6 +11,8 @@ tags: [overview, video, background-removal, relighting, matting, diffusion]
 
 **background-magic-free** (internal name **lumina-bg**) is a free, no-green-screen tool that swaps the background of a person video and optionally relights the person to match the new environment. It runs free on Google Colab (GPU) for the heavy path, and locally on CPU for the lightweight paths. Repo by [@rob-d3v](https://github.com/rob-d3v), MIT-licensed.
 
+> **Start here:** read [[overview/background-magic-free-quickref]] first — dense operating contract (stack, run/build/deploy, subsystems, gotchas). This page is the long-form front door.
+
 > Migrated from a pre-existing `wiki/` brain at the repo root (19 pages: 10 components, 7 concepts, 2 decisions). See [[#Migration note]]. Original brain language is **pt-BR** — most detail pages are in Portuguese; this overview front door is in English.
 
 ## What it does
@@ -80,6 +82,13 @@ Real-time webcam background swap published to a **virtual camera** (OBS Virtual 
 ## Sources
 
 [[sources/readme]] · [[sources/plano-iclight-comfyui-colab]] · [[sources/lumina-bg-notebook]]
+
+## Detailed subsystem pages
+
+- **Live desktop GUI (`camera_app.py`):** [[concepts/camera-app-gui-dark-theme]] · [[concepts/camera-app-gui-gallery-recording]] · [[concepts/camera-app-gui-dual-thread-frame-pipeline]] · [[concepts/camera-app-gui-video-edit-mode]]
+- **Image adjustments:** [[concepts/image-adjustments-agent-render-video-gap]] · [[decisions/image-adjustments-agent-stateless-pure-function]] · [[decisions/image-adjustments-agent-fixed-transform-order]]
+- **Composition / render-video (CPU):** [[decisions/composicao-render-video-dois-caminhos-cpu]] · [[decisions/composicao-render-video-ffmpeg-audio-mux]]
+- **Source pages:** [[sources/gradio-app-source-app-py]] (`app.py`) · [[sources/gradio-app-source-config-py]] (`config.py` for Gradio) · [[sources/pipeline-orchestrator-config-py]] (`config.py`) · [[sources/agent-background-generation-geracao-fundo-py]] (`geracao_fundo.py`) · [[sources/agent-background-removal-remocao-py]] (`remocao.py`) · [[sources/image-adjustments-agent-ajustes-py]] (`ajustes.py`)
 
 ## Generic knowledge → shared base
 

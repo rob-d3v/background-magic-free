@@ -48,6 +48,13 @@ Reference those pages instead of re-ingesting them here. Keep this brain project
   verified bugs (bg discarded; wrong weight load) tracked in [[entities/relighting]] +
   [[decisions/migrate-fc-to-fbc]]; Colab paths in `pipeline.py` are hardcoded.
 
+## Retrieval protocol (for a future Claude session)
+
+1. **Read the quickref FIRST:** [[overview/background-magic-free-quickref]] — project + stack + run/build/deploy + subsystems + gotchas in one page.
+2. For specifics, run `secondbrain.py search "<vault>" "<terms>"` and read only the **top 1-3 hits**. Never bulk-read `wiki/`.
+3. Cite pages inline as `[[slug]]` when you use them.
+4. File durable discoveries back as new/updated pages, then `secondbrain.py reindex "<vault>"`.
+
 ## How to drive
 
 Point an LLM at `agents/second-brain/SKILL.md` (in agentes_perdidos) and this vault, then:
